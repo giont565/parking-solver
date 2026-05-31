@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Parking Solver — 自動停車場配置工具</title>
+<!-- Leaflet (free, no API key) for the real-world map base. Pinned + SRI-verified. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#0ea5e9;
+    --good:#22c55e; --warn:#f59e0b; --bad:#ef4444;
+    --stall:#3b82f6; --compact:#22c55e; --ada:#1d4ed8; --ev:#10b981; --trailer:#f59e0b;
+    --aisle:#cbd5e1; --site:#1b2a3d; --building:#64748b; --obstacle:#7f1d1d;
+    --radius:8px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+    background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;}
+  button{font-family:inherit;}
+  /* ---- layout ---- */
+  #app{display:grid;grid-template-rows:48px 1fr 26px;grid-template-columns:1fr 320px;
+    grid-template-areas:"toolbar toolbar" "canvas panel" "status status";height:100vh;}
+  #toolbar{grid-area:toolbar;display:flex;align-items:center;gap:6px;padding:0 12px;
+    background:linear-gradient(180deg,#1e293b,#172033);border-bottom:1px solid var(--line);}
+  #stage{grid-area:canvas;position:relative;background:
+    radial-gradient(circle at 30% 20%,#13203a,#0b1426);overflow:hidden;}
+  #panel{grid-area:panel;background:var(--panel);border-left:1px solid var(--line);
+    overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:14px;}
+  #status{grid-area:status;display:flex;align-items:center;gap:18px;padding:0 12px;
+    background:#0b1426;border-top:1px solid var(--line);color:var(--muted);font-size:11px;}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;z-index:2;}
+  #map{position:absolute;inset:0;z-index:1;display:none;background:#0b1426;}
+  #map.show{display:block;}
+  .leaflet-container{background:#0b1426;}
+  #mapbar{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:6;
+    display:none;gap:6px;align-items:center;background:rgba(15,23,42,.94);border:1px solid var(--line);
+    border-radius:10px;padding:6px 8px;backdrop-filter:blur(6px);box-shadow:0 8px 30px rgba(0,0,0,.5);}
+  #mapbar.show{display:flex;}
+  #mapbar input{width:300px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:7px 10px;font-size:12px;}
+  #mapbar input:focus{outline:none;border-color:var(--accent);}
+  #mapbar .mbtn{height:32px;padding:0 12px;border:1px solid var(--line);background:var(--panel2);
+    color:var(--text);border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;}
+  #mapbar .mbtn:hover{border-color:var(--accent);}
+  #mapbar .seg{height:32px;}
+  #objTree{position:absolute;top:14px;left:14px;z-index:6;display:none;width:212px;
+    background:rgba(15,23,42,.96);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+    box-shadow:0 10px 36px rgba(0,0,0,.55);backdrop-filter:blur(6px);}
+  #objTree.show{display:block;}
+  #objTree .oth{padding:9px 12px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.5px;background:#1a2638;border-bottom:1px solid var(--line);}
+  #objTreeBody{padding:6px;max-height:60vh;overflow-y:auto;}
+  .otrow{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--text);}
+  .otrow:hover{background:var(--panel2);}
+  .otrow .oc{margin-left:auto;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;}
+  .otrow.lv1{padding-left:8px;font-weight:700;}
+  .otrow.lv2{padding-left:22px;}
+  .otrow.lv3{padding-left:38px;color:var(--muted);}
+  .otrow .otctl{display:flex;gap:5px;margin-left:7px;flex:none;}
+  .otrow .ot-eye,.otrow .ot-lock{font-size:11px;line-height:1;cursor:pointer;opacity:.9;transition:transform .12s,opacity .12s;}
+  .otrow .ot-eye:hover,.otrow .ot-lock:hover{transform:scale(1.18);}
+  .otrow .ot-eye.off{opacity:.4;}
+  .otrow .ot-lock.on{opacity:1;text-shadow:0 0 6px var(--accent);}
+  #twPanel{position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:6;display:none;
+    flex-direction:column;gap:5px;padding:11px 13px;min-width:248px;
+    background:rgba(15,23,42,.96);border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 10px 36px rgba(0,0,0,.55);backdrop-filter:blur(6px);}
+  #twPanel.show{display:flex;}
+  #twPanel .twsec{font-size:10px;color:var(--accent);font-weight:700;text-transform:uppercase;
+    letter-spacing:.5px;margin-top:4px;}
+  #twPanel label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);cursor:pointer;padding:2px 0;}
+  #twPanel input{accent-color:var(--accent);}
+  #twPanel .twfoot{font-size:10px;color:var(--muted);margin-top:6px;border-top:1px solid var(--line);padding-top:6px;}
+  #entPopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:3px;padding:5px;
+    background:rgba(15,23,42,.96);border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-160%);}
+  #entPopup.show{display:flex;}
+  #entPopup .cap{font-size:10px;color:var(--accent);text-align:center;font-weight:700;padding:1px 2px 2px;}
+  #entPopup .row{display:flex;gap:3px;}
+  #entPopup button{height:27px;padding:0 9px;border:1px solid var(--line);background:#0f1a2b;
+    color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;}
+  #entPopup button:hover{border-color:var(--accent);}
+  #entPopup button.active{background:var(--accent2);color:#001018;border-color:var(--accent);}
+  #entPopup button.del{color:var(--bad);font-weight:800;}
+  #entPopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
+  #edgePopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:4px;padding:7px 9px;
+    background:rgba(15,23,42,.97);border:1px solid var(--warn);border-radius:8px;
+    box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
+  #edgePopup.show{display:flex;}
+  #edgePopup .cap{font-size:10px;color:var(--warn);text-align:center;font-weight:700;}
+  #edgePopup .row{display:flex;gap:4px;align-items:center;}
+  #edgePopup button{height:26px;padding:0 9px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;}
+  #edgePopup button:hover{border-color:var(--warn);}
+  #edgePopup button.del{color:var(--bad);}
+
+  /* ---- toolbar ---- */
+  .brand{display:flex;align-items:center;gap:8px;margin-right:8px;font-weight:700;letter-spacing:.3px;}
+  .brand .dot{width:10px;height:10px;border-radius:3px;background:var(--accent);box-shadow:0 0 10px var(--accent);}
+  .brand small{color:var(--muted);font-weight:500;}
+  .tbar-sep{width:1px;height:26px;background:var(--line);margin:0 4px;}
+  .tool{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+    min-width:54px;height:36px;padding:2px 6px;border:1px solid transparent;border-radius:var(--radius);
+    background:transparent;color:var(--muted);cursor:pointer;font-size:10px;transition:.12s;}
+  .tool svg{width:16px;height:16px;}
+  .tool:hover{background:var(--panel2);color:var(--text);}
+  .tool.active{background:var(--accent2);color:#001018;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;}
+  .btn{height:32px;padding:0 12px;border-radius:var(--radius);border:1px solid var(--line);
+    background:var(--panel2);color:var(--text);cursor:pointer;font-weight:600;transition:.12s;display:inline-flex;align-items:center;gap:6px;}
+  .btn:hover{border-color:var(--accent);}
+  .btn.primary{background:linear-gradient(180deg,#0ea5e9,#0284c7);border-color:#0ea5e9;color:#001018;}
+  .btn.primary:hover{filter:brightness(1.08);}
+  .btn.ghost{background:transparent;}
+  .btn:disabled{opacity:.4;cursor:not-allowed;}
+  .spacer{flex:1;}
+  .tbsel{height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:0 8px;font-size:12px;cursor:pointer;}
+  .tbsel:focus{outline:none;border-color:var(--accent);}
+
+  /* ---- panel ---- */
+  .group{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+  .group>h3{margin:0;padding:9px 12px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+    color:var(--muted);background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:6px;
+    cursor:pointer;user-select:none;transition:background .12s;}
+  .group>h3:hover{background:#22324a;color:var(--text);}
+  .group>h3 .ico{width:13px;height:13px;color:var(--accent);}
+  .group>h3 .chev{margin-left:auto;font-size:9px;color:var(--muted);transition:transform .15s;}
+  .group.collapsed>h3{border-bottom:none;}
+  .group.collapsed>h3 .chev{transform:rotate(-90deg);}
+  .group.collapsed>.body{display:none;}
+  .group .body{padding:10px 12px;display:flex;flex-direction:column;gap:9px;}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .field label{color:var(--muted);font-size:12px;flex:1;}
+  .field input[type=number],.field select,.field input[type=text]{
+    width:96px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:5px 8px;font-size:12px;text-align:right;}
+  .field select{text-align:left;}
+  .field input[type=text]{text-align:left;}
+  .field input:focus,.field select:focus{outline:none;border-color:var(--accent);}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+  .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:6px 0;cursor:pointer;font-size:12px;font-weight:600;}
+  .seg button.active{background:var(--accent2);color:#001018;}
+  .hint{font-size:11px;color:var(--muted);line-height:1.5;}
+
+  /* metrics */
+  .metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .metric{background:#0f1a2b;border:1px solid var(--line);border-radius:7px;padding:8px 10px;}
+  .metric .v{font-size:21px;font-weight:800;line-height:1.1;color:#fff;font-variant-numeric:tabular-nums;}
+  .metric .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px;}
+  .metric.big{grid-column:span 2;}
+  .metric.big .v{font-size:30px;color:var(--accent);}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 12px;}
+  .legend .it{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);}
+  .legend .sw{width:12px;height:12px;border-radius:3px;border:1px solid rgba(255,255,255,.2);}
+  .breakdown{display:flex;flex-direction:column;gap:5px;}
+  .brow{display:flex;align-items:center;gap:8px;font-size:12px;}
+  .brow .sw{width:11px;height:11px;border-radius:3px;}
+  .brow .nm{flex:1;color:var(--muted);}
+  .brow .ct{font-weight:700;font-variant-numeric:tabular-nums;}
+  .cc{display:flex;align-items:center;gap:8px;padding:7px 0;font-size:12px;border-bottom:1px solid var(--line);}
+  .cc:last-child{border-bottom:none;}
+  .cc .badge{min-width:18px;height:18px;padding:0 4px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#001018;}
+  .cc .badge.ok{background:var(--good);}
+  .cc .badge.no{background:var(--bad);color:#fff;}
+  .cc .nm{flex:1;color:var(--text);}
+  .cc .val{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11px;}
+  #complianceScore{font-size:12px;font-weight:700;margin-bottom:8px;padding:6px 10px;border-radius:6px;text-align:center;}
+  #complianceScore.pass{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid var(--good);}
+  #complianceScore.fail{background:rgba(239,68,68,.15);color:#f87171;border:1px solid var(--bad);}
+  #targetBadge{font-size:12px;font-weight:700;margin-top:6px;padding:6px 10px;border-radius:6px;text-align:center;}
+  #targetBadge.pass{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid var(--good);}
+  #targetBadge.fail{background:rgba(239,68,68,.15);color:#f87171;border:1px solid var(--bad);}
+
+  /* schemes */
+  .scheme{display:flex;align-items:center;gap:8px;padding:7px 9px;background:#0f1a2b;border:1px solid var(--line);border-radius:6px;}
+  .scheme .nm{flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .scheme .sub{font-size:10px;color:var(--muted);}
+  .scheme .mini{width:26px;height:24px;border-radius:5px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;font-size:13px;}
+  .scheme .mini:hover{color:var(--text);border-color:var(--accent);}
+
+  .row2{display:flex;gap:8px;}
+  .row2 .btn{flex:1;justify-content:center;}
+
+  /* overlay help */
+  #help{position:absolute;left:14px;top:14px;max-width:320px;background:rgba(15,23,42,.92);
+    border:1px solid var(--line);border-radius:10px;padding:14px 16px;backdrop-filter:blur(6px);
+    box-shadow:0 10px 40px rgba(0,0,0,.5);font-size:12px;line-height:1.6;}
+  #help h4{margin:0 0 8px;font-size:13px;}
+  #help kbd{background:#0f1a2b;border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;}
+  #help .x{position:absolute;top:8px;right:10px;cursor:pointer;color:var(--muted);}
+  #help ul{margin:6px 0 0;padding-left:18px;}
+  #help li{margin:3px 0;}
+
+  /* toast */
+  #toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
+    background:#0f1a2b;border:1px solid var(--accent);border-radius:8px;padding:9px 16px;
+    font-size:12px;opacity:0;pointer-events:none;transition:.25s;box-shadow:0 8px 30px rgba(0,0,0,.5);z-index:50;}
+  #toast.show{opacity:1;}
+
+  /* solving spinner */
+  #busy{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(8,14,26,.55);z-index:40;flex-direction:column;gap:14px;}
+  #busy.show{display:flex;}
+  .spin{width:42px;height:42px;border:4px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp 0.8s linear infinite;}
+  @keyframes sp{to{transform:rotate(360deg);}}
+
+  .zoomctl{position:absolute;right:14px;bottom:14px;display:flex;flex-direction:column;gap:6px;}
+  .zoomctl button{width:34px;height:34px;border-radius:8px;border:1px solid var(--line);
+    background:rgba(15,23,42,.9);color:var(--text);cursor:pointer;font-size:18px;font-weight:700;}
+  .zoomctl button:hover{border-color:var(--accent);}
+  .zoomctl .ztoggle.on{background:rgba(34,197,94,.22);border-color:var(--good);}
+  /* TestFit-style tabulation bar (bottom) */
+  #tabBar{position:absolute;left:14px;bottom:42px;z-index:5;display:none;gap:0;
+    background:rgba(15,23,42,.95);border:1px solid var(--line);border-radius:9px;
+    box-shadow:0 8px 28px rgba(0,0,0,.5);backdrop-filter:blur(6px);overflow:hidden;max-width:calc(100% - 120px);}
+  #tabBar.show{display:flex;}
+  #tabBar .col{padding:8px 14px;border-right:1px solid var(--line);min-width:96px;}
+  #tabBar .col:last-child{border-right:none;}
+  #tabBar .col h5{margin:0 0 5px;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);font-weight:800;}
+  #tabBar .kv{display:flex;justify-content:space-between;gap:12px;font-size:11px;line-height:1.7;}
+  #tabBar .kv .k{color:var(--muted);}
+  #tabBar .kv .v{color:#fff;font-weight:700;font-variant-numeric:tabular-nums;}
+
+  .scalebar{position:absolute;left:14px;bottom:14px;display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--muted);}
+  .scalebar .bar{height:5px;border:1px solid var(--text);border-top:none;}
+
+  /* modal (generative options + scheme compare) */
+  #modal{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;
+    background:rgba(2,6,16,.62);backdrop-filter:blur(3px);}
+  #modal.show{display:flex;}
+  #modalBox{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    max-width:92vw;max-height:88vh;overflow:auto;min-width:540px;box-shadow:0 24px 70px rgba(0,0,0,.6);}
+  #modalHead{display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:var(--panel);z-index:1;}
+  #modalHead h2{margin:0;font-size:15px;flex:1;}
+  #modalHead .x{cursor:pointer;color:var(--muted);font-size:17px;width:28px;height:28px;display:flex;
+    align-items:center;justify-content:center;border-radius:6px;}
+  #modalHead .x:hover{background:var(--panel2);color:var(--text);}
+  #modalBody{padding:16px 18px;}
+  .optgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:10px;}
+  .optcard{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px;
+    display:flex;flex-direction:column;gap:5px;}
+  .optcard.best{border-color:var(--good);box-shadow:0 0 0 1px var(--good) inset;}
+  .optcard .optthumb{width:100%;height:auto;border-radius:6px;border:1px solid var(--line);display:block;background:#0b1426;}
+  .optcard .rank{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;}
+  .optcard .big{font-size:25px;font-weight:800;color:var(--accent);line-height:1;}
+  .optcard .sub{font-size:11px;color:var(--muted);line-height:1.5;}
+  .optcard .apply{margin-top:5px;height:30px;border-radius:6px;border:1px solid var(--accent);
+    background:var(--accent2);color:#001018;font-weight:700;cursor:pointer;}
+  .optcard .apply:hover{filter:brightness(1.08);}
+  .cmptable{width:100%;border-collapse:collapse;font-size:12px;}
+  .cmptable th,.cmptable td{border:1px solid var(--line);padding:7px 10px;text-align:right;font-variant-numeric:tabular-nums;}
+  .cmptable th{background:#1a2638;color:var(--muted);position:sticky;top:46px;}
+  .cmptable td:first-child,.cmptable th:first-child{text-align:left;color:var(--text);font-weight:600;}
+  .cmptable tr:hover td{background:var(--panel2);}
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ===================== TOOLBAR ===================== -->
+  <div id="toolbar">
+    <div class="brand"><span class="dot"></span>TestFit Clone <small>v2.0</small></div>
+    <div class="seg" id="modeSeg" style="width:158px;height:32px;">
+      <button data-mode="parking" class="active">🅿️ 停車場</button>
+      <button data-mode="site">🏢 建案</button>
+    </div>
+    <button class="tool" id="btnObjTree" title="物件樹 — 基地/停車/車位/出入口/建築階層" style="min-width:46px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h8M3 12h13M3 19h8M16 5h5M19 12h2M16 19h5"/></svg>物件</button>
+    <div class="tbar-sep"></div>
+
+    <button class="tool" data-tool="select" title="選取 / 編輯 (V)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-6 1 3 6-3 1-3-6-5 4z"/></svg>選取</button>
+    <button class="tool" data-tool="boundary" title="畫基地邊界 (B)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/><circle cx="4" cy="4" r="1.6" fill="currentColor"/><circle cx="20" cy="20" r="1.6" fill="currentColor"/></svg>基地</button>
+    <button class="tool" data-tool="building" title="畫建築量體 (G)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築</button>
+    <button class="tool" data-tool="obstacle" title="畫障礙 / 排除區 (O)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>障礙</button>
+    <button class="tool" data-tool="entrance" title="放出入口 (E)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h12M11 8l4 4-4 4M21 4v16"/></svg>出入口</button>
+    <button class="tool" data-tool="subdivide" title="切割基地成多塊子地 (D)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
+    <button class="tool" data-tool="measure" title="量測距離 (M)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
+    <button class="tool" data-tool="pan" title="平移畫面 (空白鍵拖曳)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11V5a2 2 0 014 0v6m0-3a2 2 0 014 0v5a6 6 0 01-6 6h-1a6 6 0 01-5-3l-2.5-4a1.5 1.5 0 012.6-1.5L11 13"/></svg>平移</button>
+
+    <div class="tbar-sep"></div>
+    <button class="btn primary" id="btnSolve"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>自動排車位</button>
+    <button class="btn" id="btnGenerate" title="自動試多組參數、依車位數/Yield 排名出多個方案"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l1.5 4L11 8 6.5 9.5 5 14l-1.5-4.5L-1 8l4.5-1zM18 10l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg>產生方案</button>
+    <button class="btn" id="btnOptimize" title="自動搜尋能達到目標車位的最佳配置（不夠才動用斜停/單向）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.6" fill="currentColor"/></svg>自動達標</button>
+    <button class="btn ghost" id="btnSample">範例基地</button>
+    <button class="btn ghost" id="btnClear">清空</button>
+    <button class="btn ghost" id="btnUndo" title="復原 Undo (⌘Z)" disabled>↶</button>
+    <button class="btn ghost" id="btnRedo" title="重做 Redo (⌘⇧Z)" disabled>↷</button>
+
+    <div class="tbar-sep"></div>
+    <div class="seg" id="viewSeg" style="width:104px;height:32px;">
+      <button data-view="2d" class="active">2D</button>
+      <button data-view="3d">3D 量體</button>
+    </div>
+    <button class="tool" id="btnMap" title="真實地圖底圖（衛星/街道，免費）" style="margin-left:4px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>地圖</button>
+
+    <div class="tbar-sep"></div>
+    <select id="regionSel" class="tbsel" title="法規地區（可編輯參考預設）">
+      <option value="us">🇺🇸 美規</option>
+      <option value="tw">🇹🇼 台灣</option>
+      <option value="jp">🇯🇵 日本</option>
+      <option value="eu">🇪🇺 歐洲</option>
+    </select>
+    <div class="seg" id="unitSeg" style="width:74px;height:32px;">
+      <button data-u="imperial" class="active">ft</button>
+      <button data-u="metric">m</button>
+    </div>
+
+    <div class="spacer"></div>
+    <button class="btn ghost" id="btnHelp" title="說明">?</button>
+  </div>
+
+  <!-- ===================== STAGE ===================== -->
+  <div id="stage">
+    <div id="map"></div>
+    <canvas id="cv"></canvas>
+
+    <div id="mapbar">
+      <input type="text" id="addrInput" value="南部科學園區 臺南" placeholder="🔍 輸入地址 / 地名，按 Enter 移動地圖…" />
+      <button class="mbtn" id="addrGo">前往</button>
+      <div class="seg" style="width:150px;">
+        <button id="tSat" class="active">衛星</button>
+        <button id="tStreet">街道</button>
+      </div>
+      <button class="mbtn" id="btnTwLayers" title="國土測繪中心免費圖資：地籍/土壤液化/地形/台灣空照">🇹🇼 台灣圖層</button>
+      <button class="mbtn" id="mapTrace" title="開始在地圖上描出基地邊界">✏️ 描基地</button>
+    </div>
+
+    <!-- Taiwan NLSC layers panel (real government map data, free) -->
+    <div id="twPanel">
+      <div class="twsec">底圖 Base</div>
+      <label><input type="radio" name="twbase" value="esri" checked> 🛰️ Esri 衛星（全球）</label>
+      <label><input type="radio" name="twbase" value="photo2"> 🇹🇼 台灣高清空照（NLSC）</label>
+      <label><input type="radio" name="twbase" value="osm"> 🗺️ OSM 街道</label>
+      <label><input type="radio" name="twbase" value="emap"> 🇹🇼 台灣電子地圖</label>
+      <div class="twsec">疊圖 Overlay（內政部國土測繪中心）</div>
+      <label><input type="checkbox" data-ov="LANDSECT"> 📐 地籍圖（地號/地界）</label>
+      <label><input type="checkbox" data-ov="SoilLiquefaction"> 🌊 土壤液化潛勢</label>
+      <label><input type="checkbox" data-ov="MOI_SLOPEP_GT30"> ⛰️ 坡度 &gt;30%</label>
+      <label><input type="checkbox" data-ov="MOI_CONTOUR"> 〰️ 等高線</label>
+      <label><input type="checkbox" data-ov="LUIMAP"> 🟩 國土利用現況</label>
+      <div class="twfoot">資料來源：內政部國土測繪中心 WMTS · 免費開放</div>
+    </div>
+
+    <div id="help">
+      <span class="x" id="helpClose">✕</span>
+      <h4>🅿️ 怎麼用</h4>
+      <ul>
+        <li>點 <b>基地</b> → 在畫面點幾下圈出地，按 <kbd>Enter</kbd> 或點回起點收尾。</li>
+        <li>（可選）用 <b>建築</b> 放大樓量體、<b>障礙</b> 圈出不能停的地方。</li>
+        <li>右側調 <b>停車角度 / 車格尺寸 / 車道寬</b> 等參數。</li>
+        <li>按 <b>⚡ 自動排車位</b>，幾秒算出最佳配置與車位數。</li>
+        <li><b>選取</b> 模式點單一車格可切換 標準/小型/充電/無障礙；右鍵刪除。</li>
+        <li>滾輪縮放、空白鍵拖曳平移。</li>
+      </ul>
+    </div>
+
+    <div id="busy"><div class="spin"></div><div id="busyTxt">運算中…</div></div>
+
+    <div class="zoomctl">
+      <button id="btnTrees" title="景觀樹 顯示/隱藏" class="ztoggle on">🌳</button>
+      <button id="zin">＋</button><button id="zout">－</button><button id="zfit" title="符合畫面" style="font-size:12px;">⤢</button>
+    </div>
+
+    <!-- TestFit-style tabulation bar -->
+    <div id="tabBar"></div>
+
+    <!-- object tree (site hierarchy, like TestFit's left panel) -->
+    <div id="objTree">
+      <div class="oth">物件樹 Object Tree</div>
+      <div id="objTreeBody"></div>
+    </div>
+    <div class="scalebar" id="scalebar"><div class="bar" id="scaleBar" style="width:80px;"></div><span id="scaleTxt">— ft</span></div>
+    <div id="toast"></div>
+
+    <!-- entrance type picker (appears when you click an entrance) -->
+    <div id="entPopup">
+      <div class="cap">↓ 這個出入口的方向</div>
+      <div class="row">
+        <button data-t="in" title="只進：車道箭頭朝場內">▸ 只進</button>
+        <button data-t="out" title="只出：車道箭頭朝場外">只出 ◂</button>
+        <button data-t="inout" title="可進可出：雙向車道">⇄ 進出</button>
+        <button data-t="del" title="刪除這個出入口" class="del">✕</button>
+      </div>
+    </div>
+
+    <!-- per-edge setback editor (site mode — click a boundary edge) -->
+    <div id="edgePopup">
+      <div class="cap">這條邊退縮（<span id="edgeSbUnit">ft</span>）</div>
+      <div class="row">
+        <input type="number" id="edgeSbInput" min="0" step="1" placeholder="auto"
+          style="width:62px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);border-radius:5px;padding:4px 6px;font-size:12px;text-align:right;">
+        <button id="edgeSbApply">套用</button>
+        <button id="edgeSbReset" class="del" title="恢復自動退縮">↺</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PANEL ===================== -->
+  <div id="panel">
+    <!-- metrics -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M7 14l3-3 3 3 5-6"/></svg>即時數據</h3>
+      <div class="body">
+        <div id="metricsParking">
+          <div class="metrics">
+            <div class="metric big"><div class="v" id="mTotal">0</div><div class="l">總車位數 Total Stalls</div></div>
+            <div class="metric"><div class="v" id="mRatio">—</div><div class="l">車位比 /1000 SF</div></div>
+            <div class="metric"><div class="v" id="mEff">—</div><div class="l">SF / 車位</div></div>
+            <div class="metric"><div class="v" id="mArea">—</div><div class="l">基地面積 (ac)</div></div>
+            <div class="metric"><div class="v" id="mCover">—</div><div class="l">停車覆蓋率</div></div>
+          </div>
+          <div class="breakdown" id="breakdown"></div>
+        </div>
+        <div id="metricsSite" style="display:none;">
+          <div class="metrics">
+            <div class="metric big"><div class="v" id="sUnits">0</div><div class="l">總戶數 Units</div></div>
+            <div class="metric"><div class="v" id="sGFA">—</div><div class="l">總樓地板 GFA (SF)</div></div>
+            <div class="metric"><div class="v" id="sNRSF">—</div><div class="l">可租 NRSF (SF)</div></div>
+            <div class="metric"><div class="v" id="sFAR">—</div><div class="l">容積率 FAR</div></div>
+            <div class="metric"><div class="v" id="sFloors">—</div><div class="l">樓層 Floors</div></div>
+            <div class="metric"><div class="v" id="sDensity">—</div><div class="l">密度 DU/ac</div></div>
+            <div class="metric"><div class="v" id="sYield">—</div><div class="l">Yield on Cost</div></div>
+          </div>
+          <div class="breakdown" id="siteBreakdown"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ PARKING-MODE PANEL ============ -->
+    <div id="grpParking">
+    <!-- parameters -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 00-1.7-1l-.3-2.6H10l-.3 2.6a7 7 0 00-1.7 1l-2.3-1-2 3.4L5.7 11a7 7 0 000 2l-2 1.5 2 3.4 2.3-1a7 7 0 001.7 1l.3 2.6h4l.3-2.6a7 7 0 001.7-1l2.3 1 2-3.4-2-1.5a7 7 0 00.1-1z"/></svg>停車參數</h3>
+      <div class="body">
+        <div class="field"><label>停車角度</label>
+          <div class="seg" id="angleSeg" style="width:160px;">
+            <button data-ang="90" class="active">90°</button>
+            <button data-ang="60">60°</button>
+            <button data-ang="45">45°</button>
+          </div>
+        </div>
+        <div class="field"><label>車格寬 Stall W (ft)</label><input type="number" id="pW" value="9" step="0.5" min="7.5" max="12"></div>
+        <div class="field"><label>車格深 Stall D (ft)</label><input type="number" id="pD" value="18" step="0.5" min="14" max="22"></div>
+        <div class="field"><label>🔄 車道循環</label>
+          <div class="seg" id="onewaySeg" style="width:160px;">
+            <button data-ow="0" class="active">雙向</button>
+            <button data-ow="1">單向(省空間)</button>
+          </div>
+        </div>
+        <div class="field"><label>🚪 進出模式</label>
+          <div class="seg" id="accessSeg" style="width:188px;">
+            <button data-acc="open" title="開放式：整個臨路面開放、不設閘口（保留全部車位）">開放式</button>
+            <button data-acc="single" title="單一出入口：限定一個閘口">單一</button>
+            <button data-acc="multi" class="active" title="多出入口：可設多個閘口（預設）">多個</button>
+          </div>
+        </div>
+        <div class="field"><label>車道寬 Aisle (ft)</label><input type="number" id="pA" value="24" step="1" min="10" max="30"></div>
+        <div class="field"><label>退縮 Setback (ft)</label><input type="number" id="pS" value="5" step="1" min="0" max="50"></div>
+        <div class="field"><label>方向 Orientation</label>
+          <select id="pOrient" title="自動最佳＝自動試多個角度、挑車位最多的那個（一定 ≥ 任何手動方向）">
+            <option value="auto">自動最佳（車位最多）</option>
+            <option value="0">水平 0°</option>
+            <option value="90">垂直 90°</option>
+            <option value="edge">沿最長邊（最整齊）</option>
+          </select>
+        </div>
+        <div class="hint">「自動最佳」試多個角度挑車位最多者；「沿最長邊」最整齊、貼合基地。</div>
+        <div class="field"><label>角度微調 Stall angle</label><input type="number" id="pAngleNum" value="90" step="5" min="30" max="90" title="任意角度（30–90），不限 90/60/45"></div>
+        <div class="field"><label>🌿 綠帶 Green buffer (ft)</label><input type="number" id="pGreen" value="0" step="1" min="0" max="40"></div>
+        <div class="field"><label>🌳 景觀島 Max Run</label>
+          <div class="seg" id="maxRunSeg" style="width:120px;">
+            <button data-mr="0" class="active">關</button><button data-mr="1">開</button>
+          </div>
+        </div>
+        <div class="field" id="maxRunRow1" style="display:none;"><label>每排最多 Max stalls/run</label><input type="number" id="pMaxRun" value="12" step="1" min="3" max="40"></div>
+        <div class="field" id="maxRunRow2" style="display:none;"><label>島寬 Gap width (ft)</label><input type="number" id="pMaxGap" value="9" step="1" min="4" max="30"></div>
+        <div class="field"><label>建築高度 Height (ft)</label><input type="number" id="pH" value="35" step="1" min="8" max="400"></div>
+        <div class="field"><label>🎯 目標車位 Target</label><input type="number" id="pTarget" value="0" min="0" step="10" placeholder="0=不限"></div>
+        <div class="field"><label>🌳 景觀樹 配置</label>
+          <div class="seg" id="treesSeg" style="width:120px;">
+            <button data-tr="0">關</button><button data-tr="1" class="active">開</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- stall mix -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>車位種類配比</h3>
+      <div class="body">
+        <div class="field"><label>♿ ADA 無障礙</label>
+          <select id="adaMode" style="width:110px;"><option value="code">依法規自動</option><option value="manual">手動指定</option><option value="off">不設置</option></select>
+        </div>
+        <div class="field" id="adaManualRow" style="display:none;"><label>ADA 數量</label><input type="number" id="adaManual" value="4" min="0" step="1"></div>
+        <div class="field"><label>⚡ EV 充電 (%)</label><input type="number" id="pEV" value="8" min="0" max="100" step="1"></div>
+        <div class="field"><label>🚗 Compact 小型 (%)</label><input type="number" id="pCompact" value="0" min="0" max="100" step="1"></div>
+        <div class="field"><label>🚗 Compact 車格寬 (ft)</label><input type="number" id="cW" value="7.5" step="0.5" min="6" max="9" title="小型車格較窄，實際排得更密（真縮距）"></div>
+        <div class="field"><label>🎨 車種顏色</label>
+          <span style="display:flex;gap:4px;">
+            <input type="color" id="colStandard" value="#3b82f6" title="標準 Standard" style="width:26px;height:24px;padding:1px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+            <input type="color" id="colCompact" value="#22c55e" title="小型 Compact" style="width:26px;height:24px;padding:1px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+            <input type="color" id="colEv" value="#10b981" title="EV 充電" style="width:26px;height:24px;padding:1px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+            <input type="color" id="colAda" value="#1d4ed8" title="無障礙 ADA" style="width:26px;height:24px;padding:1px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+          </span>
+        </div>
+        <div class="hint">小型車格較窄、實際排得更密（真縮距）；色塊可改各車種顏色。</div>
+        <div class="field"><label>建築 GFA (SF)</label><input type="number" id="pGFA" value="0" min="0" step="1000" placeholder="自動"></div>
+        <div class="hint">GFA 留 0 時自動用畫的建築量體面積估算（樓地板）。</div>
+      </div>
+    </div>
+
+    <!-- legend -->
+    <div class="group">
+      <h3>圖例</h3>
+      <div class="body">
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+    </div><!-- /grpParking -->
+
+    <!-- ============ SITE-MODE PANEL ============ -->
+    <div id="grpSite" style="display:none;">
+      <div class="group">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13"/></svg>開發類型</h3>
+        <div class="body">
+          <div class="field"><label>用途 Use</label>
+            <select id="sUse" style="width:150px;">
+              <option value="multifamily">多戶住宅 Multifamily</option>
+              <option value="singlefamily">獨棟/連棟 Single-family</option>
+              <option value="mixeduse">複合用途 Mixed-use</option>
+              <option value="office">辦公 Office</option>
+              <option value="retail">零售 Retail</option>
+              <option value="hotel">旅館 Hotel</option>
+              <option value="industrial">工業 Industrial</option>
+              <option value="datacenter">資料中心 Data Center</option>
+            </select>
+          </div>
+          <div class="field"><label>樓層高 Floor-to-floor (ft)</label><input type="number" id="sFloorH" value="11" step="0.5" min="8" max="30"></div>
+          <div class="field"><label>得房率 Efficiency (%)</label><input type="number" id="sEff" value="82" step="1" min="50" max="100"></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>法規 Zoning <span style="margin-left:auto;font-size:9px;color:var(--muted);">手動輸入</span></h3>
+        <div class="body">
+          <div class="field"><label>最大容積 Max FAR</label><input type="number" id="zFAR" value="2.0" step="0.1" min="0.1" max="30"></div>
+          <div class="field"><label>最大高度 Height (ft)</label><input type="number" id="zHeight" value="75" step="1" min="10" max="1000"></div>
+          <div class="field"><label>最大建蔽 Coverage (%)</label><input type="number" id="zCov" value="45" step="1" min="5" max="100"></div>
+          <div class="field"><label>密度上限 DU/acre</label><input type="number" id="zDUA" value="40" step="1" min="0" placeholder="0=不限"></div>
+          <div class="field"><label>退縮 前 / 側 / 後 (ft)</label>
+            <span style="display:flex;gap:4px;">
+              <input type="number" id="zSbF" value="25" step="1" min="0" style="width:42px;">
+              <input type="number" id="zSbS" value="10" step="1" min="0" style="width:42px;">
+              <input type="number" id="zSbR" value="20" step="1" min="0" style="width:42px;">
+            </span>
+          </div>
+          <div class="field"><label>車位比 Parking ratio</label><input type="number" id="zPark" value="1.5" step="0.1" min="0"></div>
+          <div class="hint" id="zParkHint">住宅：車位 / 戶；商用/工業：車位 / 1000 SF。</div>
+        </div>
+      </div>
+
+      <div class="group" id="grpUnitMix">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>單元配比 Unit Mix</h3>
+        <div class="body">
+          <div class="field" style="font-size:10px;color:var(--muted);"><span style="flex:1;">房型</span><span style="width:60px;text-align:right;">佔比 %</span><span style="width:60px;text-align:right;">坪數 SF</span></div>
+          <div class="field"><label>Studio 套房</label><input type="number" id="uxStudioP" value="15" min="0" max="100" style="width:60px;"><input type="number" id="uxStudioS" value="500" min="200" style="width:60px;"></div>
+          <div class="field"><label>1-Bed 一房</label><input type="number" id="ux1P" value="45" min="0" max="100" style="width:60px;"><input type="number" id="ux1S" value="700" min="300" style="width:60px;"></div>
+          <div class="field"><label>2-Bed 二房</label><input type="number" id="ux2P" value="30" min="0" max="100" style="width:60px;"><input type="number" id="ux2S" value="1000" min="500" style="width:60px;"></div>
+          <div class="field"><label>3-Bed 三房</label><input type="number" id="ux3P" value="10" min="0" max="100" style="width:60px;"><input type="number" id="ux3S" value="1250" min="700" style="width:60px;"></div>
+          <div class="hint" id="uxSum">佔比合計：100%</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>財務 Pro-forma <span style="margin-left:auto;font-size:9px;color:var(--muted);">選填</span></h3>
+        <div class="body">
+          <div class="field"><label>土地成本 Land ($)</label><input type="number" id="fLand" value="4000000" step="100000" min="0"></div>
+          <div class="field"><label>營造單價 Hard ($/SF)</label><input type="number" id="fHard" value="180" step="5" min="0"></div>
+          <div class="field"><label>軟成本 Soft (%)</label><input type="number" id="fSoft" value="20" step="1" min="0"></div>
+          <div class="field" id="fRentResiRow"><label>月租 Rent ($/戶/月)</label><input type="number" id="fRentMo" value="1800" step="50" min="0"></div>
+          <div class="field" id="fRentCommRow" style="display:none;"><label>租金 Rent ($/SF/年)</label><input type="number" id="fRentSf" value="28" step="1" min="0"></div>
+          <div class="field"><label>營運費率 OpEx (%)</label><input type="number" id="fOpex" value="35" step="1" min="0" max="90"></div>
+          <div class="field"><label>租金成長 Growth (%/yr)</label><input type="number" id="fGrowth" value="3" step="0.5" min="0" max="20"></div>
+          <div class="field"><label>持有年數 Hold (yr)</label><input type="number" id="fHold" value="5" step="1" min="1" max="30"></div>
+          <div class="field"><label>退場 Exit cap (%)</label><input type="number" id="fExitCap" value="5.5" step="0.25" min="2" max="15"></div>
+          <div class="hint">IRR／退場價值／權益倍數／敏感度在「數量計算」報表內。</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>法規檢核 Compliance</h3>
+        <div class="body">
+          <div id="complianceList"><div class="hint">畫好基地、按「自動配置建案」後顯示。</div></div>
+        </div>
+      </div>
+    </div><!-- /grpSite -->
+
+    <!-- ============ BUILDING APPEARANCE (both modes, when buildings exist) ============ -->
+    <div class="group" id="grpBldg" style="display:none;">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築外觀 Appearance</h3>
+      <div class="body">
+        <div class="field"><label>選擇建築 Building</label><select id="bSel" style="width:140px;"></select></div>
+        <div class="field"><label>顏色 Colour</label><input type="color" id="bColor" value="#64748b" style="width:54px;height:30px;padding:2px;"></div>
+        <div class="field"><label>透明度 Opacity (%)</label><input type="number" id="bOpacity" value="55" min="10" max="100" step="5"></div>
+        <div class="field"><label>建築高度 Height (ft)</label><input type="number" id="bHeight" value="35" min="8" max="800" step="1"></div>
+        <div class="field"><label>🏠 屋頂 Roof</label>
+          <div class="seg" id="bRoofSeg" style="width:140px;"><button data-r="1" class="active">有頂</button><button data-r="0">開放(無頂)</button></div>
+        </div>
+        <button class="btn" id="bDelete" style="justify-content:center;">🗑️ 刪除此建築</button>
+        <div class="hint">用「建築」工具在現有建築裡再畫一個小框 → 自動變成中庭 Void。切到「3D 量體」看立體效果與屋頂開孔。</div>
+      </div>
+    </div>
+
+    <!-- schemes -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>方案 Schemes</h3>
+      <div class="body">
+        <div class="field"><input type="text" id="schemeName" placeholder="方案名稱…" style="flex:1;width:auto;"></div>
+        <div class="row2">
+          <button class="btn" id="btnSaveScheme" style="flex:2;justify-content:center;">＋ 儲存目前方案</button>
+          <button class="btn" id="btnCompare" style="flex:1;justify-content:center;" title="並排比較已儲存方案">比較</button>
+        </div>
+        <div id="schemeList" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+    </div>
+
+    <!-- parameter presets (reusable templates, separate from full-project schemes) -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v4H4zM4 12h10v8H4zM18 12h2v8h-2z"/></svg>參數預設 Presets</h3>
+      <div class="body">
+        <div class="hint">把目前的「參數組」（車格/車道/法規/配比…）存成可重用範本，套到任何基地。</div>
+        <div class="field"><input type="text" id="presetName" placeholder="預設名稱…" style="flex:1;width:auto;"></div>
+        <button class="btn" id="btnSavePreset" style="justify-content:center;">＋ 另存為參數預設</button>
+        <div id="presetList" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+    </div>
+
+    <!-- export -->
+    <div class="group">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>匯出</h3>
+      <div class="body">
+        <div class="row2"><button class="btn" id="exTakeoff" style="flex:1;justify-content:center;">📊 數量計算 Quantity Takeoff</button></div>
+        <div class="row2"><button class="btn" id="exPDF" style="flex:1;justify-content:center;" title="開啟報告 → 瀏覽器列印 / 存成 PDF（向量文字、含中文）">📄 可行性報告 PDF</button><button class="btn" id="exXLSX" style="flex:1;justify-content:center;" title="下載多工作表 Excel（數量計算＋車位清單＋IRR 敏感度）">📊 Excel .xlsx</button></div>
+        <div class="row2"><button class="btn" id="exPNG">PNG 圖</button><button class="btn" id="exCSV">CSV 清單</button></div>
+        <div class="row2"><button class="btn" id="exDXF">DXF (CAD)</button><button class="btn" id="exOBJ">OBJ (3D)</button><button class="btn" id="exJSON">JSON</button></div>
+        <input type="file" id="impJSON" accept=".json" style="display:none;">
+        <button class="btn ghost" id="impBtn" style="justify-content:center;">匯入 JSON</button>
+      </div>
+    </div>
+    <div style="height:4px;"></div>
+  </div>
+
+  <!-- ===================== STATUS ===================== -->
+  <div id="status">
+    <span id="stTool">工具：選取</span>
+    <span id="stCoord">— , —</span>
+    <span id="stArea">面積：—</span>
+    <span id="stOrient"></span>
+    <span class="spacer" style="flex:1;"></span>
+    <span id="stMsg">就緒</span>
+  </div>
+</div>
+
+<!-- reusable modal: generative options + scheme compare -->
+<div id="modal">
+  <div id="modalBox">
+    <div id="modalHead"><h2 id="modalTitle">—</h2><span class="x" id="modalClose">✕</span></div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="solver.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
