@@ -1088,6 +1088,36 @@ function structuredDeck(footprint, p, entrances) {
   return { stalls, aisles: deck.aisles, ramp, columns, perFloor: stalls.length, theta: th };
 }
 
+// TOWNHOME SUBDIVISION: lay rows of townhouse lots inside the buildable envelope, aligned to its
+// longest edge — double-loaded bands (access drive + two back-to-back rows). Returns the unit
+// rectangles (world coords) actually fitting inside the parcel. A real lot count, not a GFA estimate.
+function subdivisionLayout(envelope, p) {
+  if (!envelope || envelope.length < 3) return { units: [], drives: [], theta: 0, count: 0 };
+  const Wu = p.townhouseW || 20, Du = p.townhouseD || 40, drive = p.subDrive || 24;   // ft
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toLocal = pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y });
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(toLocal);
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const units = [], drives = [], band = drive + 2 * Du;
+  for (let q0 = minQ; q0 + drive + Du <= maxQ + 1; q0 += band) {
+    const dq0 = q0, dq1 = q0 + drive;                                  // the access drive of this band
+    if (dq1 <= maxQ) drives.push([toWorld(minR, dq0), toWorld(maxR, dq0), toWorld(maxR, dq1), toWorld(minR, dq1)]);
+    for (const rowQ of [q0 + drive, q0 + drive + Du]) {                // two back-to-back rows
+      if (rowQ + Du > maxQ + 1) break;
+      for (let r = minR; r + Wu <= maxR + 1; r += Wu) {
+        const rect = [toWorld(r, rowQ), toWorld(r + Wu, rowQ), toWorld(r + Wu, rowQ + Du), toWorld(r, rowQ + Du)];
+        if (rect.every(pt => pointInPoly(pt, envelope))) units.push(rect);
+      }
+    }
+  }
+  return { units, drives, theta: th, count: units.length, unitW: Wu, unitD: Du };
+}
+
 function solveSite(input) {
   const { boundary, p } = input;
   if (!boundary || boundary.length < 3) return null;
@@ -1120,8 +1150,14 @@ function solveSite(input) {
   const nrsf = gfa * p.efficiency;
 
   // 4. units (residential) or none (commercial/industrial)
-  let units = 0, unitsByType = [], densityCapped = false;
-  if (residential) {
+  let units = 0, unitsByType = [], densityCapped = false, subdivision = null;
+  if (p.useType === 'singlefamily') {
+    // TOWNHOME SUBDIVISION: real physical lot count from the row layout, not a GFA estimate
+    subdivision = subdivisionLayout(envelope, p);
+    units = subdivision.count;
+    if (p.maxDUA > 0) { const cap = Math.floor(p.maxDUA * acres); if (units > cap) { units = cap; densityCapped = true; } }
+    unitsByType = [{ type: 'townhome', count: units, size: subdivision.unitW * subdivision.unitD }];
+  } else if (residential) {
     const mix = p.unitMix, sumPct = mix.reduce((s, m) => s + m.pct, 0) || 1;
     const avgSize = mix.reduce((s, m) => s + m.pct * m.size, 0) / sumPct;
     units = Math.floor(nrsf / Math.max(avgSize, 1));
@@ -1140,7 +1176,11 @@ function solveSite(input) {
   const levelsBelow = structured ? Math.max(0, Math.round(p.parkingLevelsBelow || 0)) : 0;
   const parkingLevels = structured ? Math.max(1, levelsAbove + levelsBelow) : 1;
   const structEff = (p.structEff == null ? 95 : p.structEff);          // cores/columns residual (ramp now removed explicitly)
-  if (structured) {
+  if (subdivision) {
+    // TOWNHOMES self-park: each lot has its own driveway/garage (~2 spaces), no separate surface lot.
+    parkSol = { stalls: [], aisles: [], connectors: [] };
+    parkingProvided = units * 2;
+  } else if (structured) {
     // MULTI-LEVEL GARAGE: pack the footprint as one deck (real ramp + columns), then stack levels.
     const d = structuredDeck(footprint, p, input.entrances);
     parkingPerFloor = d.perFloor;
@@ -1173,7 +1213,7 @@ function solveSite(input) {
   return {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
-    structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow,
+    structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision,
   };
 }
 

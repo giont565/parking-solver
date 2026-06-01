@@ -344,13 +344,21 @@ function draw() {
     }
   }
 
-  // building massing footprint (site mode) — solid block on top
-  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3 && S.layers.building.vis) {
-    pathPoly(S.site.footprint, true);
-    ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; ctx.stroke();
-    hatch(S.site.footprint, '#bae6fd', .3);
-    labelPoly(S.site.footprint, `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+  // building massing (site mode). TOWNHOME SUBDIVISION draws individual lots + access drives;
+  // every other use draws the single massing block.
+  if (S.mode === 'site' && S.site && S.layers.building.vis) {
+    const sub = S.site.subdivision;
+    if (sub && sub.units && sub.units.length) {
+      (sub.drives || []).forEach(d => { pathPoly(d, true); ctx.fillStyle = 'rgba(148,163,184,.30)'; ctx.fill(); });   // access drives
+      sub.units.forEach(u => { pathPoly(u, true); ctx.fillStyle = 'rgba(56,189,248,.5)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); });
+      labelPoly(S.site.footprint && S.site.footprint.length >= 3 ? S.site.footprint : S.boundary, `${sub.count} 戶連棟 · ${S.site.floors}F`, '#e2e8f0');
+    } else if (S.site.footprint && S.site.footprint.length >= 3) {
+      pathPoly(S.site.footprint, true);
+      ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; ctx.stroke();
+      hatch(S.site.footprint, '#bae6fd', .3);
+      labelPoly(S.site.footprint, `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+    }
   }
 
   // buildings — each with its own colour / opacity, void courtyards punched out
@@ -885,10 +893,18 @@ function draw3D() {
   }
   S.obstacles.forEach(o => pushBox(faces, o, 3, '#7f1d1d'));
   S.buildings.forEach(b => pushBox(faces, b.poly, bHeight(b), b.color || '#64748b', 'BUILDING', b.roof !== false, b.voids));
-  // site-mode residential massing — sits ON TOP of the above-grade parking podium (if any)
-  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) {
-    const podium = structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
-    pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, structured ? 0.4 : null);
+  // site-mode residential massing. TOWNHOME SUBDIVISION = many small unit blocks + drives;
+  // everything else = one massing block (on top of the above-grade parking podium, if any).
+  if (S.mode === 'site' && S.site) {
+    const sub = S.site.subdivision;
+    if (sub && sub.units && sub.units.length) {
+      (sub.drives || []).forEach(d => faces.push({ pts: d.map(p => ({ x: p.x, y: p.y, z: 0.02 })), fill: 'rgba(148,163,184,.28)', stroke: 'rgba(148,163,184,.5)', depth: baseDepthArr(d), z: 0.02 }));
+      const uh = Math.max(S.site.height, 20);
+      sub.units.forEach(u => pushBox(faces, u, uh, '#0ea5e9', null, true, null, 0));
+    } else if (S.site.footprint && S.site.footprint.length >= 3) {
+      const podium = structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
+      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, structured ? 0.4 : null);
+    }
   }
 
   faces.sort((a, b) => (a.depth - b.depth) || (a.z - b.z));
