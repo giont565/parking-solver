@@ -438,14 +438,49 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
   const byPc = segs.slice().sort((A, B) => A.pc - B.pc);
   for (let i = 0; i < byPc.length; i++) {
     const A = byPc[i];
+    // Track whether A's LOW and HIGH run-ends each got a cross-rung. A blocker can split the
+    // neighbouring row into two segments (one overlapping A's low end, one its high end); linking
+    // only the first leaves A's other end a DEAD-END. So keep scanning neighbours until BOTH ends
+    // are served (or none remain). On a plain lot the nearest neighbour serves both ends at once,
+    // so this still breaks immediately — no extra cross-aisles introduced.
+    let loDone = false, hiDone = false;
     for (let j = i + 1; j < byPc.length; j++) {
       const B = byPc[j];
       if (B.pc - A.pc > aisleW * 4) break;                   // neighbour too far → different field
       const oLo = Math.max(A.rLo, B.rLo), oHi = Math.min(A.rHi, B.rHi);
       if (oHi - oLo < aisleW) continue;                      // no real run-overlap → try a further row
-      const r1 = tryRung(A, B, oLo + half, +1);
-      const r2 = (oHi - oLo > aisleW * 3) ? tryRung(A, B, oHi - half, -1) : false;  // far-end rung too → a loop road (matches a plain lot's two perimeter drives)
-      if (r1 || r2) break;                                   // linked to this neighbour; if NEITHER rung fit (a blocker sat in the gap) keep scanning for a row we CAN actually reach
+      // a rung near A's low / high end is only useful if THIS overlap actually reaches that end
+      const servesLo = !loDone && (oLo <= A.rLo + aisleW * 1.5);
+      const servesHi = !hiDone && (oHi >= A.rHi - aisleW * 1.5);
+      // lay a rung at each of A's UNSERVED ends that this neighbour-piece can reach (an obstacle-split
+      // neighbour reaches only one of A's ends, so each end binds to whichever piece covers it)
+      const r1 = servesLo ? tryRung(A, B, oLo + half, +1) : false;
+      const r2 = (servesHi && oHi - oLo > aisleW) ? tryRung(A, B, oHi - half, -1) : false;
+      // short overlap that is itself a far end → a single mid rung still links the pair
+      const rMid = (!r1 && !r2 && oHi - oLo >= aisleW) ? tryRung(A, B, (oLo + oHi) / 2, +1) : false;
+      if (r1) loDone = true;
+      if (r2) hiDone = true;
+      if (rMid) { if (servesLo) loDone = true; if (servesHi) hiDone = true; }
+      if (loDone && hiDone) break;                            // both ends linked → done with A
+    }
+    // END-BIND pass: the forward scan only looks at higher-pc neighbours, so a row that a blocker
+    // split into a low piece + a high piece can leave the INNER end of one piece unlinked (its only
+    // spanning neighbour sits at a LOWER pc index). For each end still unserved, scan ALL neighbours
+    // (nearest pc first, both directions) for one whose run-span covers that end, and lay the rung
+    // AT that end. Only fires for genuinely unlinked ends, so fully-linked plain lots are untouched.
+    if (!loDone || !hiDone) {
+      const nbrs = byPc.map(B => ({ B, d: Math.abs(B.pc - A.pc) }))
+        .filter(o => o.B !== A && o.d > 1 && o.d <= aisleW * 4).sort((a, b) => a.d - b.d);
+      for (const end of [{ on: loDone, r: A.rLo, sign: +1 }, { on: hiDone, r: A.rHi, sign: -1 }]) {
+        if (end.on) continue;
+        for (const { B } of nbrs) {
+          if (B.rLo > end.r - aisleW || B.rHi < end.r + aisleW) continue;     // piece doesn't reach this end
+          const lim = { rLo: Math.max(A.rLo, B.rLo), rHi: Math.min(A.rHi, B.rHi) };
+          if (lim.rHi - lim.rLo < aisleW * 0.5) continue;
+          const target = end.sign > 0 ? lim.rLo + half : lim.rHi - half;
+          if (tryRung(A, B, target, end.sign)) break;        // this end linked → next end
+        }
+      }
     }
   }
   // merge rungs sharing a run-line into continuous bands. Rungs are GROUPED onto
@@ -513,7 +548,14 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
       x: (q[0].x * (1 - u) + q[1].x * u) * (1 - v) + (q[3].x * (1 - u) + q[2].x * u) * v,
       y: (q[0].y * (1 - u) + q[1].y * u) * (1 - v) + (q[3].y * (1 - u) + q[2].y * u) * v,
     });
-    connectors.sort((a, b) => polyArea(b.poly) - polyArea(a.poly));    // keep the biggest, test the rest against it
+    // Keep PERPENDICULAR rungs ahead of slanted edge-bands of similar size, then biggest-first.
+    // A far-end rung and a boundary edge-band often shadow each other; if the wider edge-band is
+    // tested first it survives and the rung is dropped — and the later load-bearing prune then
+    // deletes that edge-band too (the field stays connected via its NEAR-end rung), leaving the
+    // far end with NO cross-aisle: a dead-end. Preferring the rung makes the perpendicular cross
+    // aisle survive de-dup (the prune never touches non-edgeBand rungs), closing the loop.
+    const rank = cn => (cn.edgeBand ? 0 : 1);
+    connectors.sort((a, b) => (rank(b) - rank(a)) || (polyArea(b.poly) - polyArea(a.poly)));
     const keep = [];
     for (const cn of connectors) {
       let inside = 0, total = 0;
@@ -538,13 +580,56 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
   // carry .type, so every downstream consumer (reach-seed, drive-clear, BFS, validator) that
   // iterates `spines` keeps working unchanged.
   const spines = [];
-  const netPolys = sol.aisles.map(a => a.poly).concat(connectors.map(cn => cn.poly));
+  // The spine must reach the PARKING network — an aisle, or a connector that actually touches an
+  // aisle. A connector (e.g. a boundary edge-band) that floats free of every aisle is NOT a valid
+  // landing pad: routing onto it leaves the gate unable to reach any stall, and that band may even
+  // be pruned later (orphaning the spine). Restricting `inNet` to aisle-connected polys makes the
+  // cost-search thread a tight gap to a real aisle rather than dead-end on an isolated edge-band.
+  const aislePolys0 = sol.aisles.map(a => a.poly);
+  const netPolys = aislePolys0.concat(connectors.filter(cn => aislePolys0.some(ap => polyOverlap(cn.poly, ap))).map(cn => cn.poly));
   const inNet = pt => netPolys.some(poly => pointInPoly(pt, poly));
   // a band rectangle of width aisleW centred on segment u→v
   const bandSeg = (u, v) => {
     let dx = v.x - u.x, dy = v.y - u.y; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
     const ox = -dy * half, oy = dx * half;
     return [{ x: u.x + ox, y: u.y + oy }, { x: u.x - ox, y: u.y - oy }, { x: v.x - ox, y: v.y - oy }, { x: v.x + ox, y: v.y + oy }];
+  };
+  // clip a convex polygon to the half-plane dot(n, p-A) >= 0 (keep where n points)
+  const clipHalf = (poly, ax, ay, nx, ny) => {
+    const f = p => nx * (p.x - ax) + ny * (p.y - ay);
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const cur = poly[i], prv = poly[(i + poly.length - 1) % poly.length];
+      const fc = f(cur), fp = f(prv);
+      if (fc >= -1e-9) { if (fp < -1e-9) { const t = fp / (fp - fc); out.push({ x: prv.x + t * (cur.x - prv.x), y: prv.y + t * (cur.y - prv.y) }); } out.push(cur); }
+      else if (fp >= -1e-9) { const t = fp / (fp - fc); out.push({ x: prv.x + t * (cur.x - prv.x), y: prv.y + t * (cur.y - prv.y) }); }
+    }
+    return out;
+  };
+  // Last-resort: trim a band leg off any blocker it grazes. For each blocker whose interior the band
+  // enters, find the blocker edge the band centreline is OUTSIDE of (the side the lane sits on) and
+  // clip the band to that edge's outer half-plane — narrowing the lane to the clear gap (e.g. a tight
+  // slot) instead of running over the building/obstacle. Convex-in → convex-out; connectivity kept
+  // because the centreline itself stays drivable.
+  const clipLegOffBlockers = (poly, u, v) => {
+    let out = poly;
+    const mid = { x: (u.x + v.x) / 2, y: (u.y + v.y) / 2 };
+    for (const b of blockers) {
+      if (!polyOverlap(out, b)) continue;
+      // pick the blocker edge whose OUTWARD normal points toward the lane centreline most strongly
+      let beI = -1, beDot = -Infinity, bn = null, ba = null;
+      for (let i = 0; i < b.length; i++) {
+        const a = b[i], c2 = b[(i + 1) % b.length];
+        let nx = (c2.y - a.y), ny = -(c2.x - a.x); const L = Math.hypot(nx, ny) || 1; nx /= L; ny /= L;  // one normal
+        // make it the OUTWARD normal (points away from blocker centroid)
+        const bc = centroid(b); if (nx * (bc.x - a.x) + ny * (bc.y - a.y) > 0) { nx = -nx; ny = -ny; }
+        const d = nx * (mid.x - a.x) + ny * (mid.y - a.y);     // how far outside this edge the lane centre sits
+        if (d > beDot) { beDot = d; beI = i; bn = { x: nx, y: ny }; ba = a; }
+      }
+      if (beI >= 0 && bn) out = clipHalf(out, ba.x, ba.y, bn.x, bn.y);
+      if (out.length < 3) break;
+    }
+    return out.length >= 3 ? out : poly;   // never return a degenerate leg
   };
   // grid over the lot at `step` resolution; cell drivable if its centre is inside the lot
   // (with a tiny inward tolerance so cells touching the boundary still count) and clear of blockers.
@@ -563,37 +648,70 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
     }
     return true;
   };
+  // CLEARANCE test: the spine lays an aisleW-wide band centred on the path, so a path cell is
+  // only safe if the band's half-width stays OFF every blocker. Require the cell centre AND four
+  // points offset by `half` (= aisleW/2) along ±x/±y to all be clear of blockers — i.e. the cell
+  // sits at least ~half from any blocker edge, so the band cannot cut into a building/obstacle.
+  const blockerClear = pt => {
+    for (const b of blockers) {
+      if (pointInPoly(pt, b)) return false;
+      if (pointInPoly({ x: pt.x + half, y: pt.y }, b)) return false;
+      if (pointInPoly({ x: pt.x - half, y: pt.y }, b)) return false;
+      if (pointInPoly({ x: pt.x, y: pt.y + half }, b)) return false;
+      if (pointInPoly({ x: pt.x, y: pt.y - half }, b)) return false;
+    }
+    return true;
+  };
+  const cellClear = (i, j) => cellDrivable(i, j) && blockerClear({ x: gcx(i), y: gcy(j) });
   const gi = x => Math.round((x - gx0 - step / 2) / step), gj = y => Math.round((y - gy0 - step / 2) / step);
   for (const e of entrances) {
     const dir = inwardEdgeNormal(boundary, e, c);
     // seed cell: step a little inward from the gate so we start on a real lot cell
     let si = gi(e.x + dir.x * step * 0.5), sj = gj(e.y + dir.y * step * 0.5);
     if (si < 0) si = 0; if (si >= gnx) si = gnx - 1; if (sj < 0) sj = 0; if (sj >= gny) sj = gny - 1;
-    // BFS to the nearest cell that lies in the network (aisle / connector)
-    const prev = new Int32Array(gnx * gny).fill(-1);
-    const seen = new Uint8Array(gnx * gny);
-    const startK = sj * gnx + si;
-    const q = [startK]; seen[startK] = 1; let head = 0, hitK = -1;
-    // if the seed cell itself isn't drivable, scan a small ring around it for one that is
+    // ROUTE gate→network with a COST-WEIGHTED search (Dijkstra) over drivable cells: a cell that
+    // keeps aisleW/2 clearance from every blocker costs ~1; a drivable cell that lies WITHIN half
+    // of a blocker (so the band would graze it) costs a big penalty. The cheapest path therefore
+    // keeps clearance whenever a clear route exists, and only "grazes" a blocker (e.g. threads a
+    // gap too tight for a full-width clear lane) when that is the ONLY way through — and even then
+    // it minimises the grazing length instead of taking a long clear detour or wandering off. Each
+    // emitted band leg is later clipped off the blockers, so any grazed stretch contributes 0
+    // overlap while still physically connecting the gate to the road graph.
+    const PEN = 1e4;                                     // penalty for a near-blocker (band would graze) cell
+    // seed; if the seed cell isn't even drivable, scan a small ring for one that is
     if (!cellDrivable(si, sj)) {
-      let found = false;
-      for (let rad = 1; rad <= 4 && !found; rad++)
+      for (let rad = 1, found = false; rad <= 4 && !found; rad++)
         for (let dj = -rad; dj <= rad && !found; dj++) for (let di = -rad; di <= rad && !found; di++) {
           const ii = si + di, jj = sj + dj;
           if (ii < 0 || ii >= gnx || jj < 0 || jj >= gny) continue;
           if (cellDrivable(ii, jj)) { si = ii; sj = jj; found = true; }
         }
-      q.length = 0; head = 0; seen.fill(0); const k2 = sj * gnx + si; q.push(k2); seen[k2] = 1;
     }
-    while (head < q.length) {
-      const k = q[head++]; const ci = k % gnx, cj = (k / gnx) | 0;
-      if (inNet({ x: gcx(ci), y: gcy(cj) })) { hitK = k; break; }
-      const nb = [[ci + 1, cj], [ci - 1, cj], [ci, cj + 1], [ci, cj - 1]];
-      for (const [ni, nj] of nb) {
-        if (ni < 0 || ni >= gnx || nj < 0 || nj >= gny) continue;
-        const nk = nj * gnx + ni;
-        if (seen[nk] || !cellDrivable(ni, nj)) continue;
-        seen[nk] = 1; prev[nk] = k; q.push(nk);
+    const prev = new Int32Array(gnx * gny).fill(-1);
+    const dist = new Float64Array(gnx * gny).fill(Infinity);
+    const done = new Uint8Array(gnx * gny);
+    let hitK = -1;
+    const startK = sj * gnx + si;
+    if (cellDrivable(si, sj)) {
+      dist[startK] = cellClear(si, sj) ? 0 : PEN;
+      // binary-heap-free Dijkstra: penalties take only 2 levels so a simple repeated-min scan is fine,
+      // but to stay O(E log V)-ish on big grids we use a lightweight bucketed frontier (array + min find).
+      const frontier = [startK];
+      while (frontier.length) {
+        // pop the min-dist frontier cell
+        let bi = 0; for (let t = 1; t < frontier.length; t++) if (dist[frontier[t]] < dist[frontier[bi]]) bi = t;
+        const k = frontier[bi]; frontier[bi] = frontier[frontier.length - 1]; frontier.pop();
+        if (done[k]) continue; done[k] = 1;
+        const ci = k % gnx, cj = (k / gnx) | 0;
+        if (inNet({ x: gcx(ci), y: gcy(cj) })) { hitK = k; break; }
+        const nb = [[ci + 1, cj], [ci - 1, cj], [ci, cj + 1], [ci, cj - 1]];
+        for (const [ni, nj] of nb) {
+          if (ni < 0 || ni >= gnx || nj < 0 || nj >= gny) continue;
+          const nk = nj * gnx + ni;
+          if (done[nk] || !cellDrivable(ni, nj)) continue;
+          const w = cellClear(ni, nj) ? 1 : PEN;          // grazing a blocker is heavily penalised
+          if (dist[k] + w < dist[nk]) { dist[nk] = dist[k] + w; prev[nk] = k; frontier.push(nk); }
+        }
       }
     }
     // reconstruct path cells gate→network, then simplify to corner waypoints
@@ -623,10 +741,11 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
       const B = { x: e.x + dir.x * aisleW * 1.2, y: e.y + dir.y * aisleW * 1.2 };
       waypts = [ent, B];
     }
-    // emit one band rectangle per leg, all tagged as this gate's spine
+    // emit one band rectangle per leg, all tagged as this gate's spine (clipped off any grazed blocker)
     for (let i = 0; i + 1 < waypts.length; i++) {
       if (Math.hypot(waypts[i + 1].x - waypts[i].x, waypts[i + 1].y - waypts[i].y) < 0.5) continue;
-      spines.push({ poly: bandSeg(waypts[i], waypts[i + 1]), type: e.type || 'inout', dir, ent });
+      const leg = clipLegOffBlockers(bandSeg(waypts[i], waypts[i + 1]), waypts[i], waypts[i + 1]);
+      spines.push({ poly: leg, type: e.type || 'inout', dir, ent });
     }
     if (!spines.some(sp => sp.ent === ent)) {           // degenerate: emit a minimal stub at the gate
       const ox = -dir.y * half, oy = dir.x * half, B = { x: e.x + dir.x * aisleW, y: e.y + dir.y * aisleW };
