@@ -526,28 +526,112 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
     connectors.length = 0; connectors.push(...keep);
   }
 
-  // ENTRANCE stubs: from each gate, inward and PERPENDICULAR TO ITS OWN boundary edge (not the
-  // aisle angle), reaching just into the in-lot road and stopping there.
+  // ENTRANCE stubs: from each gate, ROUTE to the in-lot road through drivable space.
+  // The old code marched a single straight ray inward (perpendicular to the gate edge)
+  // and STOPPED at the first non-drivable cell — so any blocker sitting in front of the
+  // gate (building/obstacle) froze the spine short of the network and orphaned the whole
+  // aisle graph from the gate; it also mis-fired when the gate sat on a boundary edge that
+  // ray-casting reports as "outside" (max-x / max-y edges), freezing the spine at ~0.8*aisleW.
+  // Replace it with a grid BFS that finds the SHORTEST drivable gate→network route, then
+  // lay an aisle-width drive band along that route (an L-shaped / dog-leg stub when the
+  // straight path is blocked). The band is emitted as a chain of convex rectangles that all
+  // carry .type, so every downstream consumer (reach-seed, drive-clear, BFS, validator) that
+  // iterates `spines` keeps working unchanged.
   const spines = [];
-  const rMin = Math.min(...segs.map(s => s.rLo)), rMax = Math.max(...segs.map(s => s.rHi));
-  const pMin = Math.min(...segs.map(s => s.pc)), pMax = Math.max(...segs.map(s => s.pc));
-  const maxLen = Math.hypot(rMax - rMin, pMax - pMin) + aisleW * 3;
+  const netPolys = sol.aisles.map(a => a.poly).concat(connectors.map(cn => cn.poly));
+  const inNet = pt => netPolys.some(poly => pointInPoly(pt, poly));
+  // a band rectangle of width aisleW centred on segment u→v
+  const bandSeg = (u, v) => {
+    let dx = v.x - u.x, dy = v.y - u.y; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const ox = -dy * half, oy = dx * half;
+    return [{ x: u.x + ox, y: u.y + oy }, { x: u.x - ox, y: u.y - oy }, { x: v.x - ox, y: v.y - oy }, { x: v.x + ox, y: v.y + oy }];
+  };
+  // grid over the lot at `step` resolution; cell drivable if its centre is inside the lot
+  // (with a tiny inward tolerance so cells touching the boundary still count) and clear of blockers.
+  const gb = bbox(boundary);
+  const gx0 = gb.minX - step, gy0 = gb.minY - step;
+  const gnx = Math.ceil((gb.maxX - gb.minX + 2 * step) / step) + 1;
+  const gny = Math.ceil((gb.maxY - gb.minY + 2 * step) / step) + 1;
+  const gcx = i => gx0 + i * step + step / 2, gcy = j => gy0 + j * step + step / 2;
+  const cellDrivable = (i, j) => {
+    const pt = { x: gcx(i), y: gcy(j) };
+    if (!drivable(pt)) {
+      // nudge toward the lot centroid so a cell straddling the boundary edge still seeds the gate
+      const nx = c.x - pt.x, ny = c.y - pt.y, nl = Math.hypot(nx, ny) || 1;
+      const pt2 = { x: pt.x + nx / nl * (step * 0.4), y: pt.y + ny / nl * (step * 0.4) };
+      if (!drivable(pt2)) return false;
+    }
+    return true;
+  };
+  const gi = x => Math.round((x - gx0 - step / 2) / step), gj = y => Math.round((y - gy0 - step / 2) / step);
   for (const e of entrances) {
     const dir = inwardEdgeNormal(boundary, e, c);
-    const ox = -dir.y, oy = dir.x;
-    let tHit = aisleW * 1.5;
-    for (let t = 0; t <= maxLen; t += step) {
-      const pt = { x: e.x + dir.x * t, y: e.y + dir.y * t };
-      if (!drivable(pt)) { tHit = Math.max(aisleW * 0.8, t - step); break; }
-      tHit = t;
-      if (sol.aisles.some(a => pointInPoly(pt, a.poly)) || connectors.some(cn => pointInPoly(pt, cn.poly))) { tHit = t + aisleW * 0.6; break; }
+    // seed cell: step a little inward from the gate so we start on a real lot cell
+    let si = gi(e.x + dir.x * step * 0.5), sj = gj(e.y + dir.y * step * 0.5);
+    if (si < 0) si = 0; if (si >= gnx) si = gnx - 1; if (sj < 0) sj = 0; if (sj >= gny) sj = gny - 1;
+    // BFS to the nearest cell that lies in the network (aisle / connector)
+    const prev = new Int32Array(gnx * gny).fill(-1);
+    const seen = new Uint8Array(gnx * gny);
+    const startK = sj * gnx + si;
+    const q = [startK]; seen[startK] = 1; let head = 0, hitK = -1;
+    // if the seed cell itself isn't drivable, scan a small ring around it for one that is
+    if (!cellDrivable(si, sj)) {
+      let found = false;
+      for (let rad = 1; rad <= 4 && !found; rad++)
+        for (let dj = -rad; dj <= rad && !found; dj++) for (let di = -rad; di <= rad && !found; di++) {
+          const ii = si + di, jj = sj + dj;
+          if (ii < 0 || ii >= gnx || jj < 0 || jj >= gny) continue;
+          if (cellDrivable(ii, jj)) { si = ii; sj = jj; found = true; }
+        }
+      q.length = 0; head = 0; seen.fill(0); const k2 = sj * gnx + si; q.push(k2); seen[k2] = 1;
     }
-    const B = { x: e.x + dir.x * tHit, y: e.y + dir.y * tHit };
-    spines.push({
-      poly: [{ x: e.x + ox * half, y: e.y + oy * half }, { x: e.x - ox * half, y: e.y - oy * half },
-             { x: B.x - ox * half, y: B.y - oy * half }, { x: B.x + ox * half, y: B.y + oy * half }],
-      type: e.type || 'inout', dir, ent: { x: e.x, y: e.y },
-    });
+    while (head < q.length) {
+      const k = q[head++]; const ci = k % gnx, cj = (k / gnx) | 0;
+      if (inNet({ x: gcx(ci), y: gcy(cj) })) { hitK = k; break; }
+      const nb = [[ci + 1, cj], [ci - 1, cj], [ci, cj + 1], [ci, cj - 1]];
+      for (const [ni, nj] of nb) {
+        if (ni < 0 || ni >= gnx || nj < 0 || nj >= gny) continue;
+        const nk = nj * gnx + ni;
+        if (seen[nk] || !cellDrivable(ni, nj)) continue;
+        seen[nk] = 1; prev[nk] = k; q.push(nk);
+      }
+    }
+    // reconstruct path cells gate→network, then simplify to corner waypoints
+    const ent = { x: e.x, y: e.y };
+    let waypts;
+    if (hitK >= 0) {
+      const cells = [];
+      for (let k = hitK; k !== -1; k = prev[k]) cells.push({ x: gcx(k % gnx), y: gcy((k / gnx) | 0) });
+      cells.reverse();                                   // gate-side → network-side
+      // keep only direction-change corners (Manhattan path → few L-segments)
+      const pts = [ent];
+      for (let i = 0; i < cells.length; i++) {
+        if (i === 0 || i === cells.length - 1) { pts.push(cells[i]); continue; }
+        const a = cells[i - 1], b = cells[i], d = cells[i + 1];
+        const turn = (b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x);
+        const straight = Math.abs((b.x - a.x) * (d.x - b.x) + (b.y - a.y) * (d.y - b.y)) > 1e-6
+          && Math.abs(turn) < 1e-6;
+        if (!straight) pts.push(cells[i]);
+      }
+      // push one short step past the last cell so the band visibly enters the road
+      const last = cells[cells.length - 1], pen = pts[pts.length - 2] || ent;
+      let ex = last.x - pen.x, ey = last.y - pen.y, el = Math.hypot(ex, ey) || 1;
+      pts.push({ x: last.x + ex / el * half, y: last.y + ey / el * half });
+      waypts = pts;
+    } else {
+      // no drivable route to the network at all → keep the legacy short straight stub
+      const B = { x: e.x + dir.x * aisleW * 1.2, y: e.y + dir.y * aisleW * 1.2 };
+      waypts = [ent, B];
+    }
+    // emit one band rectangle per leg, all tagged as this gate's spine
+    for (let i = 0; i + 1 < waypts.length; i++) {
+      if (Math.hypot(waypts[i + 1].x - waypts[i].x, waypts[i + 1].y - waypts[i].y) < 0.5) continue;
+      spines.push({ poly: bandSeg(waypts[i], waypts[i + 1]), type: e.type || 'inout', dir, ent });
+    }
+    if (!spines.some(sp => sp.ent === ent)) {           // degenerate: emit a minimal stub at the gate
+      const ox = -dir.y * half, oy = dir.x * half, B = { x: e.x + dir.x * aisleW, y: e.y + dir.y * aisleW };
+      spines.push({ poly: [{ x: e.x + ox, y: e.y + oy }, { x: e.x - ox, y: e.y - oy }, { x: B.x - ox, y: B.y - oy }, { x: B.x + ox, y: B.y + oy }], type: e.type || 'inout', dir, ent });
+    }
   }
 
   // Keep BOTH end cross-aisles (the ladder rungs) so the drive network is a LOOP,
