@@ -721,15 +721,26 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
       const cells = [];
       for (let k = hitK; k !== -1; k = prev[k]) cells.push({ x: gcx(k % gnx), y: gcy((k / gnx) | 0) });
       cells.reverse();                                   // gate-side → network-side
-      // keep only direction-change corners (Manhattan path → few L-segments)
+      // STRING-PULL the grid staircase into the FEWEST straight legs that each stay clear
+      // of blockers — a clean dog-leg instead of a jagged stair. The raw Manhattan path
+      // zig-zags ~one corner per cell (7+ legs around an obstacle); from each anchor we
+      // reach as far along the path as a straight, clearance-keeping line allows, then turn.
+      const losClear = (p, q) => {
+        const L = Math.hypot(q.x - p.x, q.y - p.y), n = Math.max(1, Math.ceil(L / (step * 0.5)));
+        for (let t = 0; t <= n; t++) {
+          const x = p.x + (q.x - p.x) * t / n, y = p.y + (q.y - p.y) * t / n;
+          if (!drivable({ x, y }) || !blockerClear({ x, y })) return false;
+        }
+        return true;
+      };
       const pts = [ent];
-      for (let i = 0; i < cells.length; i++) {
-        if (i === 0 || i === cells.length - 1) { pts.push(cells[i]); continue; }
-        const a = cells[i - 1], b = cells[i], d = cells[i + 1];
-        const turn = (b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x);
-        const straight = Math.abs((b.x - a.x) * (d.x - b.x) + (b.y - a.y) * (d.y - b.y)) > 1e-6
-          && Math.abs(turn) < 1e-6;
-        if (!straight) pts.push(cells[i]);
+      for (let idx = 0; idx < cells.length;) {
+        let far = idx;
+        for (let j = cells.length - 1; j > idx; j--) { if (losClear(cells[idx], cells[j])) { far = j; break; } }
+        if (far === idx) far = Math.min(idx + 1, cells.length - 1);   // can't extend → advance one cell
+        pts.push(cells[far]);
+        if (far === idx) break;
+        idx = far;
       }
       // push one short step past the last cell so the band visibly enters the road
       const last = cells[cells.length - 1], pen = pts[pts.length - 2] || ent;
@@ -781,9 +792,23 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
       if (connectors[i].edgeBand && reached(connectors.filter((_, k) => k !== i)) >= target) { connectors.splice(i, 1); i--; }
   }
 
-  // clear stalls sitting under the perimeter drives + entrance stubs
+  // clear stalls sitting under the perimeter drives + entrance stubs. Use an AREA test,
+  // not just the centre point: a stall whose centre is just outside a band but whose body
+  // is clipped by it (a cross-aisle edge cutting a row) would otherwise be drawn part-under
+  // the road. Measure the true overlap fraction on a fine grid over the stall (catches a thin
+  // edge strip the centre/coarse test misses) and drop the stall if >8% sits under any drive.
   const drive = connectors.concat(spines);
-  sol.stalls = sol.stalls.filter(s => !drive.some(d => pointInPoly({ x: s.cx, y: s.cy }, d.poly)));
+  sol.stalls = sol.stalls.filter(s => {
+    const candidates = drive.filter(d => polyOverlap(s.poly, d.poly));
+    if (!candidates.length) return true;
+    const b = bbox(s.poly); let inside = 0, under = 0;
+    for (let x = b.minX; x <= b.maxX; x += 1.5) for (let y = b.minY; y <= b.maxY; y += 1.5) {
+      const pt = { x, y };
+      if (!pointInPoly(pt, s.poly)) continue; inside++;
+      if (candidates.some(d => pointInPoly(pt, d.poly))) under++;
+    }
+    return under / Math.max(inside, 1) <= 0.08;           // >8% of the stall under a drive → can't park there, drop it
+  });
 
   // reachability BFS over {aisles, perimeter connectors}, seeded by the entrance stubs
   const nodes = sol.aisles.map(a => a.poly).concat(connectors.map(cn => cn.poly));
