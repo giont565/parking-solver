@@ -276,14 +276,19 @@ function draw() {
   if (park && S.layers.parking.vis) {
     ctx.save();
     if (S.boundary.length >= 3) { pathPoly(S.boundary, true); ctx.clip(); }
-    ctx.fillStyle = 'rgba(203,213,225,.16)';
+    ctx.fillStyle = 'rgba(148,163,184,.24)';                        // 車道 aisle — the lane between two stall rows
     for (const a of park.aisles) { pathPoly(a.poly, true); ctx.fill(); }
     // internal drive lanes — always TWO-WAY circulation (the 進/出 setting is only
     // about the gate at the boundary, NOT the direction of the internal roads).
+    // Colour-code the road kinds so circulation is legible at a glance:
+    //   entrance drive 出入口引道 = green · cross-connector 橫向連接道 = orange · other asphalt = grey
     if (park.connectors) for (const lane of park.connectors) {
       const poly = lane.poly || lane;                 // back-compat
-      pathPoly(poly, true); ctx.fillStyle = 'rgba(51,61,79,.78)'; ctx.fill();   // asphalt
-      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(148,163,184,.5)'; ctx.stroke();
+      const road = lane.type      ? { f: 'rgba(34,197,94,.80)',  s: 'rgba(74,222,128,.95)' }
+                 : lane.perimeter  ? { f: 'rgba(245,158,11,.82)', s: 'rgba(251,191,36,.95)' }
+                 :                    { f: 'rgba(51,61,79,.78)',  s: 'rgba(148,163,184,.5)' };
+      pathPoly(poly, true); ctx.fillStyle = road.f; ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = road.s; ctx.stroke();
       const a0 = toScreen({ x: (poly[0].x + poly[1].x) / 2, y: (poly[0].y + poly[1].y) / 2 });
       const a1 = toScreen({ x: (poly[2].x + poly[3].x) / 2, y: (poly[2].y + poly[3].y) / 2 });
       ctx.save();                                     // dashed centre line = two lanes
