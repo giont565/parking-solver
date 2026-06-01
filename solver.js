@@ -498,7 +498,7 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
       if (ok && !prev) s0 = t;
       else if (!ok && prev) {
         const tb = Math.min(1, (k - 1) / N);
-        if ((tb - s0) * L >= aisleW) connectors.push({ poly: [P(s0, bandLo), P(tb, bandLo), P(tb, bandHi), P(s0, bandHi)], perimeter: true });
+        if ((tb - s0) * L >= aisleW) connectors.push({ poly: [P(s0, bandLo), P(tb, bandLo), P(tb, bandHi), P(s0, bandHi)], perimeter: true, edgeBand: true });
       }
       prev = ok;
     }
@@ -550,36 +550,32 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
     });
   }
 
-  // Drop redundant drive bands. A plain lot is fully reachable from ONE cross-band
-  // plus the entrance spine — aisles are two-way, so a SECOND (loop) band only eats
-  // stalls. Keep the fewest connectors that still reach every aisle the full set
-  // reaches: a rectangle sheds its wasteful far-end loop (max stalls), while skewed,
-  // irregular or building-split lots that genuinely need every band keep them all.
-  if (connectors.length > 1) {
-    const aislePolys = sol.aisles.map(a => a.poly);
-    const A = aislePolys.length;
-    const aislesReached = conns => {
-      // Connectivity graph: spines + connectors + aisles, edges = physical overlap,
-      // EXCEPT aisle↔aisle — parallel rows are separated by parked stalls, so a car
-      // can only cross between aisles via a connector/spine, never directly. (Using
-      // a plain overlap graph here wrongly fused touching aisles and let the prune
-      // delete every cross-road on some rotated lots, stranding the whole field.)
-      const nodes = aislePolys.concat(conns.map(c => c.poly));
+  // Keep BOTH end cross-aisles (the ladder rungs) so the drive network is a LOOP,
+  // not a dead-end tree — a car must circulate in and back out without reversing
+  // down a blind aisle. We never prune the perpendicular rungs.
+  //
+  // Edge-bands are different: they hug a boundary edge to DETOUR around an internal
+  // building, so on an irregular lot that edge can be slanted and the band comes out
+  // non-perpendicular (not a clean cross-aisle). Keep an edge-band ONLY when it is
+  // load-bearing — i.e. some aisle reaches the network through it and nothing else —
+  // and drop spurious ones, so a lot that doesn't truly need a perimeter detour keeps
+  // every connector perpendicular.
+  if (connectors.some(cn => cn.edgeBand)) {
+    const aislePolys = sol.aisles.map(a => a.poly), A = aislePolys.length;
+    const reached = conns => {                                  // # aisles reachable from the gate; cars cross between aisles only via a connector/spine, never aisle→aisle
+      const nodes = aislePolys.concat(conns.map(cn => cn.poly));
       const reach = nodes.map(poly => spines.some(sp => polyOverlap(poly, sp.poly)));
       for (let ch = true; ch;) { ch = false;
         for (let i = 0; i < nodes.length; i++) { if (reach[i]) continue;
           for (let j = 0; j < nodes.length; j++) {
-            if (!reach[j] || (i < A && j < A)) continue;     // skip aisle→aisle hops
+            if (!reach[j] || (i < A && j < A)) continue;
             if (polyOverlap(nodes[i], nodes[j])) { reach[i] = true; ch = true; break; }
           } } }
       let n = 0; for (let i = 0; i < A; i++) if (reach[i]) n++; return n;
     };
-    const target = aislesReached(connectors);
-    if (target >= 1) {                                                  // only prune when connectivity is actually established; a degenerate gate (target 0) must keep every band, never strip the network
-      connectors.sort((a, b) => polyArea(b.poly) - polyArea(a.poly));   // try dropping the biggest (most stall-cost) band first
-      for (let i = 0; i < connectors.length; i++)
-        if (aislesReached(connectors.filter((_, k) => k !== i)) >= target) { connectors.splice(i, 1); i--; }
-    }
+    const target = reached(connectors);
+    for (let i = 0; i < connectors.length; i++)
+      if (connectors[i].edgeBand && reached(connectors.filter((_, k) => k !== i)) >= target) { connectors.splice(i, 1); i--; }
   }
 
   // clear stalls sitting under the perimeter drives + entrance stubs
