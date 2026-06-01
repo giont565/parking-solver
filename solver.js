@@ -147,11 +147,14 @@ function packAtAngle(theta, ctx) {
   const compactPitch = angled ? compactW / Math.sin(rad) : compactW;
   const xThresh = bb.minX + (1 - compactFrac) * (bb.maxX - bb.minX);
 
-  // Build the list of stall-row strips top→bottom (double-loaded modules).
+  // Build double-loaded modules + place stalls for one grid PHASE (vertical start offset).
+  // We sweep a few phases below and keep the densest: sliding the rows on an irregular lot
+  // (L / trapezoid / a band pinched by a blocker) lands a row in a wider strip and recovers it.
+  const M = 2 * d + a;
+  const attempt = (yStart) => {
   const rows = [];                    // {y0, dir:+1 down / -1 up, aisle:{y0,h}}
   const aisles = [];                  // central aisle rects (rotated-space)
-  const M = 2 * d + a;
-  let y = bb.minY;
+  let y = yStart;
   let guard = 0;
   while (guard++ < 5000) {
     if (y + M <= bb.maxY + 0.5) {                       // full double-loaded module
@@ -246,6 +249,16 @@ function packAtAngle(theta, ctx) {
       if (maxRun > 0 && ++run >= maxRun) { x += maxRunGap; run = 0; }   // landscape island
     }
   }
+  return { stalls, aisles };
+  };
+  // sweep vertical phases. f=0 is the original bottom-aligned grid, so the kept result can
+  // never pack FEWER than before — a shifted phase only ever ADDS the odd row it happens to fit.
+  let bestPack = null;
+  for (let f = 0; f < 1; f += 0.2) {
+    const res = attempt(bb.minY - f * M);
+    if (!bestPack || res.stalls.length > bestPack.stalls.length) bestPack = res;
+  }
+  const stalls = bestPack.stalls, aisles = bestPack.aisles;
 
   // keep only aisles that actually have inside coverage (trim drawing noise)
   const aisleWorld = aisles.map(r => ({
@@ -790,6 +803,61 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
     const target = reached(connectors);
     for (let i = 0; i < connectors.length; i++)
       if (connectors[i].edgeBand && reached(connectors.filter((_, k) => k !== i)) >= target) { connectors.splice(i, 1); i--; }
+  }
+
+  // DENSITY: drop REDUNDANT cross-aisles to recover the stalls they would eat. A connector
+  // is removable only when taking it out (a) leaves every aisle still reachable from a gate
+  // AND (b) leaves every aisle that was open at BOTH run-ends still open at both ends — so we
+  // never strand a field or turn an aisle into a blind (back-out-only) dead-end. Greedy:
+  // remove the biggest stall-eater that passes the guard first, then re-test, until none pass.
+  // The load-bearing rungs (the ones that actually carry the loop) all fail the guard and stay.
+  {
+    const aislePolys = sol.aisles.map(a => a.poly), A = aislePolys.length;
+    const spinePolys = spines.map(s => s.poly);
+    const PR = q => q.x * run.x + q.y * run.y;
+    // reachable-aisle count from the gates for a given connector set (cars hop aisle→aisle
+    // only through a connector/spine, never aisle→aisle directly — same rule as the BFS below)
+    const reachedAisles = conns => {
+      const nodes = aislePolys.concat(conns.map(c => c.poly));
+      const reach = nodes.map(poly => spines.some(sp => polyOverlap(poly, sp.poly)));
+      for (let ch = true; ch;) { ch = false;
+        for (let i = 0; i < nodes.length; i++) { if (reach[i]) continue;
+          for (let j = 0; j < nodes.length; j++) {
+            if (!reach[j] || (i < A && j < A)) continue;
+            if (polyOverlap(nodes[i], nodes[j])) { reach[i] = true; ch = true; break; } } } }
+      let n = 0; for (let i = 0; i < A; i++) if (reach[i]) n++; return n;
+    };
+    // is aisle `ap` served by some drive within aisleW of BOTH its run-ends? (no blind end)
+    const endServed = (ap, t, drives) => drives.some(d => { const cs = d.map(PR);
+      return Math.min(...cs) <= t + aisleW && Math.max(...cs) >= t - aisleW && polyOverlap(ap, d); });
+    const bothEnds = (ap, conns) => { const rs = ap.map(PR), lo = Math.min(...rs), hi = Math.max(...rs);
+      const drives = conns.map(c => c.poly).concat(spinePolys);
+      return endServed(ap, lo, drives) && endServed(ap, hi, drives); };
+    // how many packed stalls a connector would eat (same >8% area test the clear below uses)
+    const eatCount = poly => sol.stalls.reduce((n, s) => {
+      if (!polyOverlap(s.poly, poly)) return n;
+      const bb = bbox(s.poly); let inside = 0, under = 0;
+      for (let x = bb.minX; x <= bb.maxX; x += 3) for (let y = bb.minY; y <= bb.maxY; y += 3) {
+        const pt = { x, y }; if (!pointInPoly(pt, s.poly)) continue; inside++;
+        if (pointInPoly(pt, poly)) under++; }
+      return n + (under / Math.max(inside, 1) > 0.08 ? 1 : 0); }, 0);
+
+    const baseReach = reachedAisles(connectors);
+    const baseOpen = aislePolys.map(ap => bothEnds(ap, connectors));   // protect only originally-open aisles
+    for (let removed = true; removed;) {
+      removed = false;
+      let best = -1, bestEat = 0;
+      for (let i = 0; i < connectors.length; i++) {
+        const without = connectors.filter((_, k) => k !== i);
+        if (reachedAisles(without) < baseReach) continue;               // would strand a field
+        let ok = true;
+        for (let a = 0; a < A && ok; a++) if (baseOpen[a] && !bothEnds(aislePolys[a], without)) ok = false;
+        if (!ok) continue;                                              // would create a blind aisle
+        const eat = eatCount(connectors[i].poly);
+        if (eat > bestEat) { bestEat = eat; best = i; }
+      }
+      if (best >= 0 && bestEat > 0) { connectors.splice(best, 1); removed = true; }
+    }
   }
 
   // clear stalls sitting under the perimeter drives + entrance stubs. Use an AREA test,
