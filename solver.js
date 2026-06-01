@@ -1055,6 +1055,39 @@ function computeFinancials(f, m) {
            exitValue, holdYears: N, irr: r == null ? null : r * 100, equityMultiple, cashflows };
 }
 
+// One structured-garage DECK packed inside `footprint`: stalls + a REAL express ramp
+// (a drive bay whose stalls are physically removed, not just discounted) + a structural
+// COLUMN grid. Returns geometry in WORLD coords + the per-deck stall count after the ramp.
+function structuredDeck(footprint, p, entrances) {
+  const deck = solve({
+    boundary: footprint, buildings: [], obstacles: [], entrances,
+    params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: 0, orient: 'auto', access: 'open' },
+    opts: { adaMode: 'off', adaManual: 0, evPct: 0, compactPct: 0 },
+  });
+  if (!deck) return { stalls: [], aisles: [], ramp: null, columns: [], perFloor: 0, theta: 0 };
+  const th = deck.theta || 0, c = centroid(footprint);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toLocal = pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y });
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const fl = footprint.map(toLocal);
+  const minR = Math.min(...fl.map(p => p.r)), maxR = Math.max(...fl.map(p => p.r));
+  const minQ = Math.min(...fl.map(p => p.q)), maxQ = Math.max(...fl.map(p => p.q));
+  // EXPRESS RAMP: a two-way drive bay along the low-r edge, centred across the deck; its stalls go away.
+  const rampW = 24, rampLen = Math.min(Math.max(maxR - minR, 1) * 0.45, 64);
+  const qMid = (minQ + maxQ) / 2;
+  const ramp = [toWorld(minR, qMid - rampW / 2), toWorld(minR + rampLen, qMid - rampW / 2),
+                toWorld(minR + rampLen, qMid + rampW / 2), toWorld(minR, qMid + rampW / 2)];
+  const stalls = deck.stalls.filter(s => !polyOverlap(s.poly, ramp));
+  // COLUMN GRID: posts on a ~27ft structural grid, clipped to the footprint (drawn, ~no stall loss).
+  const colSp = 27, columns = [];
+  for (let r = minR + colSp / 2; r < maxR; r += colSp)
+    for (let q = minQ + colSp / 2; q < maxQ; q += colSp) {
+      const w = toWorld(r, q);
+      if (pointInPoly(w, footprint)) columns.push(w);
+    }
+  return { stalls, aisles: deck.aisles, ramp, columns, perFloor: stalls.length, theta: th };
+}
+
 function solveSite(input) {
   const { boundary, p } = input;
   if (!boundary || boundary.length < 3) return null;
@@ -1101,21 +1134,19 @@ function solveSite(input) {
     ? Math.ceil(units * p.parkingRatio)
     : Math.ceil(gfa / 1000 * p.parkingRatio);
   const structured = p.parkingType === 'structured';
-  let parkSol, parkingProvided, parkingPerFloor = 0;
-  const parkingLevels = structured ? Math.max(1, Math.round(p.parkingLevels || 3)) : 1;
-  const structEff = (p.structEff == null ? 90 : p.structEff);          // ramp + cores + columns discount (%)
+  let parkSol, parkingProvided, parkingPerFloor = 0, garage = null;
+  // levels split: above grade (podium, counts toward height) + below grade (basement, excluded from height/FAR)
+  const levelsAbove = structured ? Math.max(0, Math.round(p.parkingLevelsAbove != null ? p.parkingLevelsAbove : (p.parkingLevels || 3))) : 0;
+  const levelsBelow = structured ? Math.max(0, Math.round(p.parkingLevelsBelow || 0)) : 0;
+  const parkingLevels = structured ? Math.max(1, levelsAbove + levelsBelow) : 1;
+  const structEff = (p.structEff == null ? 95 : p.structEff);          // cores/columns residual (ramp now removed explicitly)
   if (structured) {
-    // MULTI-LEVEL GARAGE: pack the building footprint as one parking deck, then stack levels.
-    // The raw deck pack already includes drive aisles; the efficiency factor discounts what a
-    // real structure loses to ramps, vertical cores and the column grid (transparent, user-tunable).
-    const deck = solve({
-      boundary: footprint, buildings: [], obstacles: [], entrances: input.entrances,
-      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: 0, orient: 'auto', access: 'open' },
-      opts: { adaMode: 'off', adaManual: 0, evPct: 0, compactPct: 0 },
-    });
-    parkingPerFloor = deck ? deck.stalls.length : 0;
+    // MULTI-LEVEL GARAGE: pack the footprint as one deck (real ramp + columns), then stack levels.
+    const d = structuredDeck(footprint, p, input.entrances);
+    parkingPerFloor = d.perFloor;
     parkingProvided = Math.round(parkingPerFloor * parkingLevels * structEff / 100);
-    parkSol = deck;                                                    // draw the typical deck
+    parkSol = { stalls: d.stalls, aisles: d.aisles, connectors: [] };  // typical deck for the 2D plan
+    garage = { ramp: d.ramp, columns: d.columns, theta: d.theta, levelsAbove, levelsBelow, floorHeight: p.floorHeight };
   } else {
     parkSol = solve({
       boundary, buildings: [footprint], obstacles: input.obstacles || [], entrances: input.entrances,
@@ -1134,7 +1165,7 @@ function solveSite(input) {
     { k: '高度 Height', ok: height <= p.maxHeight + 1e-6, val: `${Math.round(height)}ft · ${floors}F / 上限 ${p.maxHeight}ft` },
     { k: '建蔽率 Coverage', ok: coverage <= p.maxCoverage + 0.5, val: `${coverage.toFixed(0)}% / 上限 ${p.maxCoverage}%` },
     { k: '停車 Parking', ok: parkingProvided >= parkingRequired,
-      val: structured ? `${parkingProvided} / 需 ${parkingRequired}（${parkingLevels}層×${parkingPerFloor}/層×${structEff}%）` : `${parkingProvided} / 需 ${parkingRequired}` },
+      val: structured ? `${parkingProvided} / 需 ${parkingRequired}（地上${levelsAbove}+地下${levelsBelow}層 × ${parkingPerFloor}/層 × ${structEff}%）` : `${parkingProvided} / 需 ${parkingRequired}` },
   ];
   if (residential && p.maxDUA > 0)
     compliance.push({ k: '密度 Density', ok: units / acres <= p.maxDUA + 0.5, val: `${(units / acres).toFixed(1)} / 上限 ${p.maxDUA} DU/ac` });
@@ -1142,7 +1173,7 @@ function solveSite(input) {
   return {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
-    structured, parkingLevels, parkingPerFloor, structEff,
+    structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow,
   };
 }
 

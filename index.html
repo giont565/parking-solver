@@ -132,17 +132,17 @@
   .group.collapsed>h3{border-bottom:none;}
   .group.collapsed>h3 .chev{transform:rotate(-90deg);}
   .group.collapsed>.body{display:none;}
-  .group .body{padding:10px 12px;display:flex;flex-direction:column;gap:9px;}
-  .field{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-  .field label{color:var(--muted);font-size:12px;flex:1;}
+  .group .body{padding:13px 13px;display:flex;flex-direction:column;gap:12px;}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:28px;}
+  .field label{color:var(--muted);font-size:12px;flex:1;line-height:1.35;}
   .field input[type=number],.field select,.field input[type=text]{
     width:96px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);
-    border-radius:6px;padding:5px 8px;font-size:12px;text-align:right;}
+    border-radius:6px;padding:6px 9px;font-size:12px;text-align:right;}
   .field select{text-align:left;}
   .field input[type=text]{text-align:left;}
   .field input:focus,.field select:focus{outline:none;border-color:var(--accent);}
   .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
-  .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:6px 0;cursor:pointer;font-size:12px;font-weight:600;}
+  .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:7px 0;cursor:pointer;font-size:12px;font-weight:600;}
   .seg button.active{background:var(--accent2);color:#001018;}
   .hint{font-size:11px;color:var(--muted);line-height:1.5;}
 
@@ -297,6 +297,7 @@
     <button class="btn" id="btnGenerate" title="自動試多組參數、依車位數/Yield 排名出多個方案"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l1.5 4L11 8 6.5 9.5 5 14l-1.5-4.5L-1 8l4.5-1zM18 10l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg>產生方案</button>
     <button class="btn" id="btnOptimize" title="自動搜尋能達到目標車位的最佳配置（不夠才動用斜停/單向）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.6" fill="currentColor"/></svg>自動達標</button>
     <button class="btn ghost" id="btnSample">範例基地</button>
+    <select class="btn ghost" id="demoGallery" title="一鍵載入各類型範例（停車型態 / 建築用途）" style="max-width:160px;"><option value="">📋 範例展示…</option></select>
     <button class="btn ghost" id="btnClear">清空</button>
     <button class="btn ghost" id="btnUndo" title="復原 Undo (⌘Z)" disabled>↶</button>
     <button class="btn ghost" id="btnRedo" title="重做 Redo (⌘⇧Z)" disabled>↷</button>
@@ -481,6 +482,13 @@
           </select>
         </div>
         <div class="hint">「自動最佳」試多個角度挑車位最多者；「沿最長邊」最整齊、貼合基地。</div>
+      </div>
+    </div>
+
+    <!-- advanced parameters (collapsed by default — keeps the main panel uncluttered) -->
+    <div class="group collapsed">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>進階選項 Advanced</h3>
+      <div class="body">
         <div class="field"><label>角度微調 Stall angle</label><input type="number" id="pAngleNum" value="90" step="5" min="30" max="90" title="任意角度（30–90），不限 90/60/45"></div>
         <div class="field"><label>🌿 綠帶 Green buffer (ft)</label><input type="number" id="pGreen" value="0" step="1" min="0" max="40"></div>
         <div class="field"><label>🌳 景觀島 Max Run</label>
@@ -578,9 +586,10 @@
               <option value="structured">🏢 結構車庫 Structured</option>
             </select>
           </div>
-          <div class="field" id="rowParkLevels" style="display:none;"><label>車庫樓層 Levels</label><input type="number" id="sParkLevels" value="3" step="1" min="1" max="12"></div>
-          <div class="field" id="rowStructEff" style="display:none;"><label>結構折減 %</label><input type="number" id="sStructEff" value="90" step="1" min="60" max="100" title="坡道+核心+結構柱損耗，車庫實務約 85-92%"></div>
-          <div class="hint" id="parkTypeHint" style="display:none;">結構車庫：在建築範圍內疊多層停車，每層車位×樓層×折減；適合小基地要滿足高車位需求。</div>
+          <div class="field" id="rowParkLevels" style="display:none;"><label>地上層 Above</label><input type="number" id="sParkLevelsAbove" value="3" step="1" min="0" max="12"></div>
+          <div class="field" id="rowParkBelow" style="display:none;"><label>地下層 Basement</label><input type="number" id="sParkLevelsBelow" value="0" step="1" min="0" max="8"></div>
+          <div class="field" id="rowStructEff" style="display:none;"><label>結構折減 %</label><input type="number" id="sStructEff" value="95" step="1" min="60" max="100" title="柱/核心損耗；坡道已實際扣除，故約 92-97%"></div>
+          <div class="hint" id="parkTypeHint" style="display:none;">結構車庫：建築範圍內疊多層停車（地上＋地下），每層含實際坡道與柱網；3D 會疊層顯示。地下層不計高度/容積。</div>
         </div>
       </div>
 
@@ -667,7 +676,7 @@
         <div class="row2"><button class="btn" id="exTakeoff" style="flex:1;justify-content:center;">📊 數量計算 Quantity Takeoff</button></div>
         <div class="row2"><button class="btn" id="exPDF" style="flex:1;justify-content:center;" title="開啟報告 → 瀏覽器列印 / 存成 PDF（向量文字、含中文）">📄 可行性報告 PDF</button><button class="btn" id="exXLSX" style="flex:1;justify-content:center;" title="下載多工作表 Excel（數量計算＋車位清單＋IRR 敏感度）">📊 Excel .xlsx</button></div>
         <div class="row2"><button class="btn" id="exPNG">PNG 圖</button><button class="btn" id="exCSV">CSV 清單</button></div>
-        <div class="row2"><button class="btn" id="exDXF">DXF (CAD)</button><button class="btn" id="exOBJ">OBJ (3D)</button><button class="btn" id="exJSON">JSON</button></div>
+        <div class="row2"><button class="btn" id="exDXF">DXF (CAD)</button><button class="btn" id="exOBJ">OBJ (3D)</button><button class="btn" id="exGLTF" title="二進位 glTF：Blender / 網頁 3D / Revit 可直接匯入（含材質顏色）">glTF (.glb)</button><button class="btn" id="exJSON">JSON</button></div>
         <input type="file" id="impJSON" accept=".json" style="display:none;">
         <button class="btn ghost" id="impBtn" style="justify-content:center;">匯入 JSON</button>
       </div>

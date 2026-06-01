@@ -312,6 +312,25 @@ function draw() {
     drawAisleArrows(park);
     ctx.restore();
     for (const s of park.stalls) drawStall(s);
+    // structured garage: the express RAMP + the structural COLUMN grid on the typical deck
+    if (S.mode === 'site' && S.site && S.site.structured && S.site.garage) {
+      const g = S.site.garage;
+      if (g.ramp) {
+        pathPoly(g.ramp, true);
+        ctx.fillStyle = 'rgba(245,158,11,.5)'; ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(217,119,6,.95)'; ctx.stroke();
+        const cx = g.ramp.reduce((s, p) => s + p.x, 0) / g.ramp.length, cy = g.ramp.reduce((s, p) => s + p.y, 0) / g.ramp.length;
+        const sc = toScreen({ x: cx, y: cy });
+        ctx.fillStyle = 'rgba(120,53,15,.95)'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('坡道', sc.x, sc.y);
+      }
+      if (g.columns) { const r = Math.max(2, 1.3 * S.view.scale);
+        for (const c of g.columns) { const s = toScreen(c);
+          ctx.fillStyle = 'rgba(30,41,59,.92)'; ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+          ctx.strokeStyle = 'rgba(148,163,184,.85)'; ctx.lineWidth = 1; ctx.strokeRect(s.x - r, s.y - r, r * 2, r * 2);
+        }
+      }
+    }
     // ADA access aisles (striped diagonal hatch — the 5ft no-parking access zone)
     if (park.accessAisles) for (const a of park.accessAisles) {
       pathPoly(a.poly, true);
@@ -790,6 +809,14 @@ function fit3D() {
   add(S.boundary, 0);
   S.buildings.forEach(b => { add(b.poly, 0); add(b.poly, bHeight(b)); });
   S.obstacles.forEach(o => add(o, 0));
+  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) {
+    const fp = S.site.footprint; let top = S.site.height, bot = 0;
+    if (S.site.structured && S.site.garage) {                     // frame the whole stack: tower-on-podium + basements
+      const g = S.site.garage, fh = g.floorHeight || 11;
+      top = g.levelsAbove * fh + S.site.height; bot = -g.levelsBelow * fh;
+    }
+    add(fp, top); add(fp, bot);
+  }
   if (!pts.length) return;
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
   const bb = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
@@ -814,16 +841,43 @@ function draw3D() {
   ctx.beginPath();
   S.boundary.forEach((p, i) => { const s = iso(p.x, p.y, 0); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   ctx.closePath();
-  ctx.fillStyle = 'rgba(27,42,61,.95)'; ctx.fill();
+  const hasBasement = S.mode === 'site' && S.site && S.site.structured && S.site.garage && S.site.garage.levelsBelow > 0;
+  ctx.fillStyle = hasBasement ? 'rgba(27,42,61,.45)' : 'rgba(27,42,61,.95)'; ctx.fill();   // see basements through grade
   ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.stroke();
 
   // collect all faces, depth-sort (painter's algorithm)
   const faces = [];
   const baseDepth = poly => Math.max(...poly.map(p => p.x + p.y));
+  const structured = S.mode === 'site' && S.site && S.site.structured && S.site.garage && S.site.parkSol;
   const park3d = S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution;
-  if (park3d) {
+  if (structured) {
+    // MULTI-LEVEL GARAGE: stack the typical deck at every level — podium decks up from grade,
+    // basement decks below it — plus the real express ramp on each, and columns as posts.
+    const g = S.site.garage, fh = g.floorHeight || 11, deck = park3d, foot = S.site.footprint;
+    const zs = [];
+    for (let k = 0; k < g.levelsAbove; k++) zs.push(k * fh);
+    for (let k = 1; k <= g.levelsBelow; k++) zs.push(-k * fh);
+    for (const z of zs) {
+      faces.push({ pts: foot.map(p => ({ x: p.x, y: p.y, z })), fill: z < 0 ? 'rgba(51,65,85,.34)' : 'rgba(100,116,139,.26)',
+        stroke: 'rgba(148,163,184,.55)', depth: baseDepthArr(foot) - 0.6, z: z - 0.05 });   // floor plate
+      for (const s of deck.stalls) {
+        const col = COLORS[s.type] || COLORS.standard;
+        faces.push({ pts: s.poly.map(p => ({ x: p.x, y: p.y, z })), fill: hexA(col, .8), stroke: hexA(col, .95), depth: baseDepth(s.poly), z: z + 0.02 });
+      }
+      if (g.ramp) faces.push({ pts: g.ramp.map(p => ({ x: p.x, y: p.y, z })), fill: 'rgba(245,158,11,.62)', stroke: 'rgba(217,119,6,1)', depth: baseDepth(g.ramp) + 0.2, z: z + 0.06 });
+    }
+    const colBot = -g.levelsBelow * fh, colSpan = (g.levelsAbove + g.levelsBelow) * fh || fh, cs = 1.3;
+    for (const cp of g.columns) {                                         // structural posts through the stack
+      const sq = [{ x: cp.x - cs, y: cp.y - cs }, { x: cp.x + cs, y: cp.y - cs }, { x: cp.x + cs, y: cp.y + cs }, { x: cp.x - cs, y: cp.y + cs }];
+      pushBox(faces, sq, colSpan, '#334155', null, false, null, colBot);
+    }
+  } else if (park3d) {
     for (const a of park3d.aisles)
       faces.push({ pts: a.poly.map(p => ({ x: p.x, y: p.y, z: 0 })), fill: 'rgba(203,213,225,.10)', stroke: null, depth: baseDepth(a.poly), z: 0 });
+    if (park3d.connectors) for (const cn of park3d.connectors) {     // drive roads: entrance spine = green, cross-aisle = orange (mirror 2D)
+      const r = cn.type ? { f: 'rgba(34,197,94,.82)', s: 'rgba(74,222,128,1)' } : { f: 'rgba(245,158,11,.82)', s: 'rgba(251,191,36,1)' };
+      faces.push({ pts: cn.poly.map(p => ({ x: p.x, y: p.y, z: 0 })), fill: r.f, stroke: r.s, depth: baseDepth(cn.poly), z: 0.04 });
+    }
     for (const s of park3d.stalls) {
       const col = COLORS[s.type] || COLORS.standard;
       faces.push({ pts: s.poly.map(p => ({ x: p.x, y: p.y, z: 0 })), fill: hexA(col, .9), stroke: hexA(col, 1), depth: baseDepth(s.poly), z: 0 });
@@ -831,9 +885,11 @@ function draw3D() {
   }
   S.obstacles.forEach(o => pushBox(faces, o, 3, '#7f1d1d'));
   S.buildings.forEach(b => pushBox(faces, b.poly, bHeight(b), b.color || '#64748b', 'BUILDING', b.roof !== false, b.voids));
-  // site-mode generated massing
-  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3)
-    pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`);
+  // site-mode residential massing — sits ON TOP of the above-grade parking podium (if any)
+  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) {
+    const podium = structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
+    pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, structured ? 0.4 : null);
+  }
 
   faces.sort((a, b) => (a.depth - b.depth) || (a.z - b.z));
   for (const f of faces) drawFace3D(f);
@@ -863,24 +919,29 @@ function draw3D() {
   }
   // hud
   ctx.fillStyle = '#64748b'; ctx.font = '11px system-ui'; ctx.textAlign = 'left';
-  ctx.fillText(`3D 量體　建築高度 ${S.params.height} ft　·　${S.solution ? S.solution.stalls.length + ' 車位' : ''}`, 14, cv._h - 28);
+  const hud3d = (S.mode === 'site' && S.site && S.site.structured)
+    ? `3D 量體　🏢 結構車庫 地上${S.site.levelsAbove}+地下${S.site.levelsBelow}層 · 共 ${S.site.parkingProvided} 車位（每層 ${S.site.parkingPerFloor}）`
+    : `3D 量體　建築高度 ${S.params.height} ft　·　${S.solution ? S.solution.stalls.length + ' 車位' : ''}`;
+  ctx.fillText(hud3d, 14, cv._h - 28);
 }
 
-function pushBox(faces, foot, h, baseCol, label, roof, voids) {
+function pushBox(faces, foot, h, baseCol, label, roof, voids, zBase, alpha) {
+  const z0 = zBase || 0, z1 = z0 + h;       // zBase lets a box start above grade (podium) or below (basement)
+  const fa = c => (alpha != null ? hexA(c, alpha) : c);   // alpha → translucent "ghost" massing (see garage through it)
   for (let i = 0; i < foot.length; i++) {
     const p1 = foot[i], p2 = foot[(i + 1) % foot.length];
     const dx = p2.x - p1.x, dy = p2.y - p1.y;
     const wallCol = Math.abs(dx) > Math.abs(dy) ? shade(baseCol, -0.12) : shade(baseCol, -0.42);
     faces.push({
-      pts: [{ x: p1.x, y: p1.y, z: 0 }, { x: p2.x, y: p2.y, z: 0 }, { x: p2.x, y: p2.y, z: h }, { x: p1.x, y: p1.y, z: h }],
-      fill: wallCol, stroke: shade(baseCol, -0.55), depth: Math.max(p1.x + p1.y, p2.x + p2.y), z: h * 0.5,
+      pts: [{ x: p1.x, y: p1.y, z: z0 }, { x: p2.x, y: p2.y, z: z0 }, { x: p2.x, y: p2.y, z: z1 }, { x: p1.x, y: p1.y, z: z1 }],
+      fill: fa(wallCol), stroke: shade(baseCol, -0.55), depth: Math.max(p1.x + p1.y, p2.x + p2.y), z: z0 + h * 0.5,
     });
   }
   if (roof !== false) faces.push({          // flat roof — skipped when roof is turned off (open massing)
-    pts: foot.map(p => ({ x: p.x, y: p.y, z: h })),
-    holes: (voids && voids.length) ? voids.map(v => v.map(p => ({ x: p.x, y: p.y, z: h }))) : null,   // courtyard cut-outs
-    fill: shade(baseCol, 0.18), stroke: shade(baseCol, -0.15),
-    depth: baseDepthArr(foot) + 0.5, z: h + 1, label: h > 12 ? label : null,
+    pts: foot.map(p => ({ x: p.x, y: p.y, z: z1 })),
+    holes: (voids && voids.length) ? voids.map(v => v.map(p => ({ x: p.x, y: p.y, z: z1 }))) : null,   // courtyard cut-outs
+    fill: fa(shade(baseCol, 0.18)), stroke: shade(baseCol, -0.15),
+    depth: baseDepthArr(foot) + 0.5, z: z1 + 1, label: h > 12 ? label : null,
   });
 }
 function baseDepthArr(poly) { return Math.max(...poly.map(p => p.x + p.y)); }
@@ -1536,6 +1597,83 @@ function exportOBJ() {
   toast('已匯出 3D 模型 .obj（可匯入 SketchUp / Blender / Rhino）');
 }
 
+/* Binary glTF (.glb) — triangulated, colour-grouped 3D model (Blender / web viewers / Revit via import). */
+function hexToRgb01(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '#3b82f6');
+  return m ? [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255] : [0.23, 0.51, 0.96];
+}
+function exportGLTF() {
+  if (S.boundary.length < 3) { toast('請先畫出基地'); return; }
+  const pos = [];                                   // flat [x,y,z,...]  Y = up
+  const groups = [];                                // {indices:[], color:[r,g,b,a]}
+  const grp = (key, color) => { let g = groups.find(x => x.key === key); if (!g) { g = { key, indices: [], color }; groups.push(g); } return g; };
+  const addV = (x, y, z) => { pos.push(x, y, z); return pos.length / 3 - 1; };
+  const box = (foot, h, key, color, z0 = 0) => {
+    const g = grp(key, color), k = foot.length;
+    const bot = foot.map(p => addV(p.x, z0, p.y)), top = foot.map(p => addV(p.x, z0 + h, p.y));
+    for (let i = 0; i < k; i++) { const j = (i + 1) % k; g.indices.push(bot[i], bot[j], top[j], bot[i], top[j], top[i]); }   // walls
+    for (let i = 1; i < k - 1; i++) g.indices.push(top[0], top[i], top[i + 1]);          // roof fan
+    for (let i = 1; i < k - 1; i++) g.indices.push(bot[0], bot[i + 1], bot[i]);          // floor fan
+  };
+  const flat = (poly, z, key, color) => {
+    const g = grp(key, color), v = poly.map(p => addV(p.x, z, p.y));
+    for (let i = 1; i < v.length - 1; i++) g.indices.push(v[0], v[i], v[i + 1]);
+  };
+  flat(S.boundary, 0, 'ground', [0.16, 0.21, 0.28, 1]);
+  S.buildings.forEach(b => box(b.poly, bHeight(b), 'building', [0.39, 0.45, 0.55, 1]));
+  S.obstacles.forEach(o => box(o, 3, 'obstacle', [0.50, 0.11, 0.11, 1]));
+  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) {
+    const podium = (S.site.structured && S.site.garage) ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
+    box(S.site.footprint, S.site.height, 'massing', [0.05, 0.65, 0.91, 1], podium);
+    if (S.site.structured && S.site.garage) {       // stacked garage decks as thin slabs
+      const g = S.site.garage, fh = g.floorHeight || 11;
+      for (let lv = 0; lv < g.levelsAbove; lv++) box(S.site.footprint, 0.6, 'garage_deck', [0.42, 0.46, 0.55, 1], lv * fh);
+      for (let lv = 1; lv <= g.levelsBelow; lv++) box(S.site.footprint, 0.6, 'garage_deck', [0.3, 0.35, 0.45, 1], -lv * fh);
+    }
+  }
+  const park = activePark();
+  if (park) {
+    park.stalls.forEach(s => { const c = hexToRgb01(COLORS[s.type] || COLORS.standard); flat(s.poly, 0.3, 'stall_' + s.type, [c[0], c[1], c[2], 1]); });
+    (park.connectors || []).forEach(cn => flat(cn.poly, 0.2, cn.type ? 'spine' : 'road', cn.type ? [0.13, 0.77, 0.37, 1] : [0.96, 0.62, 0.04, 1]));
+  }
+  if (!pos.length) { toast('沒有可匯出的幾何'); return; }
+  // --- pack into a .glb (12B header + JSON chunk + BIN chunk) ---
+  const posF32 = new Float32Array(pos);
+  const idxArrs = groups.map(g => new Uint32Array(g.indices));
+  let binLen = posF32.byteLength; const idxOff = [];
+  idxArrs.forEach(a => { idxOff.push(binLen); binLen += a.byteLength; });
+  const bin = new Uint8Array(binLen);
+  bin.set(new Uint8Array(posF32.buffer), 0);
+  idxArrs.forEach((a, i) => bin.set(new Uint8Array(a.buffer), idxOff[i]));
+  let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < pos.length; i += 3) for (let c = 0; c < 3; c++) { mn[c] = Math.min(mn[c], pos[i + c]); mx[c] = Math.max(mx[c], pos[i + c]); }
+  const bufferViews = [{ buffer: 0, byteOffset: 0, byteLength: posF32.byteLength, target: 34962 }];
+  const accessors = [{ bufferView: 0, componentType: 5126, count: pos.length / 3, type: 'VEC3', min: mn, max: mx }];
+  const materials = [], primitives = [];
+  groups.forEach((g, i) => {
+    bufferViews.push({ buffer: 0, byteOffset: idxOff[i], byteLength: idxArrs[i].byteLength, target: 34963 });
+    accessors.push({ bufferView: i + 1, componentType: 5125, count: g.indices.length, type: 'SCALAR' });
+    materials.push({ name: g.key, pbrMetallicRoughness: { baseColorFactor: g.color, metallicFactor: 0, roughnessFactor: 0.85 }, doubleSided: true });
+    primitives.push({ attributes: { POSITION: 0 }, indices: i + 1, material: i });
+  });
+  const gltf = { asset: { version: '2.0', generator: 'TestFit Clone' }, scene: 0, scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0, name: (S.mode === 'site' ? 'site' : 'parking') + '_model' }], meshes: [{ primitives }],
+    materials, accessors, bufferViews, buffers: [{ byteLength: binLen }] };
+  const enc = new TextEncoder();
+  let jsonBytes = enc.encode(JSON.stringify(gltf));
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4; if (jsonPad) { const t = new Uint8Array(jsonBytes.length + jsonPad); t.set(jsonBytes); t.fill(0x20, jsonBytes.length); jsonBytes = t; }
+  const binPad = (4 - (binLen % 4)) % 4;
+  const total = 12 + 8 + jsonBytes.length + 8 + binLen + binPad;
+  const glb = new ArrayBuffer(total), dv = new DataView(glb); let o = 0;
+  dv.setUint32(o, 0x46546C67, true); o += 4; dv.setUint32(o, 2, true); o += 4; dv.setUint32(o, total, true); o += 4;   // header
+  dv.setUint32(o, jsonBytes.length, true); o += 4; dv.setUint32(o, 0x4E4F534A, true); o += 4;                          // JSON chunk
+  new Uint8Array(glb, o, jsonBytes.length).set(jsonBytes); o += jsonBytes.length;
+  dv.setUint32(o, binLen + binPad, true); o += 4; dv.setUint32(o, 0x004E4942, true); o += 4;                           // BIN chunk
+  new Uint8Array(glb, o, binLen).set(bin);
+  dl((S.mode === 'site' ? 'site' : 'parking') + '-model.glb', new Blob([glb], { type: 'model/gltf-binary' }));
+  toast('已匯出 3D 模型 .glb（Blender / 網頁 3D / Revit 可匯入）');
+}
+
 /* ------------------------------- toast ----------------------------------- */
 let toastT;
 function toast(msg) {
@@ -1709,6 +1847,7 @@ $('#exPNG').onclick = exportPNG;
 $('#exCSV').onclick = exportCSV;
 $('#exDXF').onclick = exportDXF;
 $('#exOBJ').onclick = exportOBJ;
+$('#exGLTF').onclick = exportGLTF;
 $('#exJSON').onclick = exportJSON;
 $('#impBtn').onclick = () => $('#impJSON').click();
 $('#impJSON').onchange = e => {
@@ -1761,8 +1900,9 @@ function readSiteParams() {
     setbacks: { front: U.Lr(+$('#zSbF').value), side: U.Lr(+$('#zSbS').value), rear: U.Lr(+$('#zSbR').value) },
     parkingRatio: +$('#zPark').value, parkAngle: S.siteParkAngle || 90, parkSetback: 5, evPct: 0,
     parkingType: ($('#sParkType') ? $('#sParkType').value : 'surface'),
-    parkingLevels: ($('#sParkLevels') ? +$('#sParkLevels').value : 3) || 3,
-    structEff: ($('#sStructEff') ? +$('#sStructEff').value : 90) || 90,
+    parkingLevelsAbove: ($('#sParkLevelsAbove') ? +$('#sParkLevelsAbove').value : 3),
+    parkingLevelsBelow: ($('#sParkLevelsBelow') ? +$('#sParkLevelsBelow').value : 0),
+    structEff: ($('#sStructEff') ? +$('#sStructEff').value : 95) || 95,
     unitMix: [
       { type: 'studio', pct: +$('#uxStudioP').value, size: U.Ar(+$('#uxStudioS').value) },
       { type: '1br', pct: +$('#ux1P').value, size: U.Ar(+$('#ux1S').value) },
@@ -1819,7 +1959,7 @@ function updateSiteMetrics() {
     });
     const pr = document.createElement('div'); pr.className = 'hint'; pr.style.marginTop = '4px';
     const parkTxt = s.structured
-      ? `🏢 結構車庫 ${s.parkingLevels} 層 × ${s.parkingPerFloor}/層 × ${s.structEff}% = 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
+      ? `🏢 結構車庫 地上${s.levelsAbove}+地下${s.levelsBelow}層 × ${s.parkingPerFloor}/層 × ${s.structEff}% = 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
       : `🅿️ 地面停車 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`;
     pr.textContent = `${parkTxt}　·　土建 $${fmt(s.fin.totalCost)}　·　NOI $${fmt(s.fin.noi)}/年`;
     bd.appendChild(pr);
@@ -1861,6 +2001,63 @@ function sampleSiteParcel() {
   commit();
 }
 
+/* ----------------------- 範例展示 demo gallery (one-click scenarios) ----------------------- */
+const DEMO_PARCELS = {
+  sample: [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }],
+  wide:   [{ x: 0, y: 0 }, { x: 520, y: 0 }, { x: 520, y: 300 }, { x: 0, y: 300 }],
+  big:    [{ x: 0, y: 0 }, { x: 760, y: 0 }, { x: 760, y: 440 }, { x: 0, y: 440 }],
+  huge:   [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 640 }, { x: 0, y: 640 }],
+};
+const DEMOS = [
+  { key: 'pk-surf',  g: '停車型態', label: '地面停車',           parcel: 'sample', use: 'multifamily', park: 'surface' },
+  { key: 'pk-above', g: '停車型態', label: '結構車庫·地上3層',   parcel: 'sample', use: 'multifamily', park: 'structured', above: 3, below: 0 },
+  { key: 'pk-below', g: '停車型態', label: '結構車庫·地下3層',   parcel: 'sample', use: 'multifamily', park: 'structured', above: 0, below: 3 },
+  { key: 'pk-mix',   g: '停車型態', label: '地上2+地下2 混合',    parcel: 'sample', use: 'multifamily', park: 'structured', above: 2, below: 2 },
+  { key: 'u-mf',  g: '建築用途', label: '多戶住宅 Multifamily',   parcel: 'sample', use: 'multifamily',  park: 'structured', above: 3, below: 0 },
+  { key: 'u-sf',  g: '建築用途', label: '獨棟/連棟 Single-family', parcel: 'sample', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35 },
+  { key: 'u-mix', g: '建築用途', label: '複合用途 Mixed-use',     parcel: 'sample', use: 'mixeduse',     park: 'structured', above: 2, below: 1 },
+  { key: 'u-off', g: '建築用途', label: '辦公 Office',            parcel: 'sample', use: 'office',       park: 'structured', above: 3, below: 1 },
+  { key: 'u-ret', g: '建築用途', label: '零售 Retail',            parcel: 'wide',   use: 'retail',       park: 'surface', far: 0.4, cov: 22 },
+  { key: 'u-hot', g: '建築用途', label: '旅館 Hotel',             parcel: 'sample', use: 'hotel',        park: 'structured', above: 2, below: 2 },
+  { key: 'u-ind', g: '建築用途', label: '工業 Industrial',        parcel: 'big',    use: 'industrial',   park: 'surface', far: 0.6, cov: 48 },
+  { key: 'u-dc',  g: '建築用途', label: '資料中心 Data Center',   parcel: 'huge',   use: 'datacenter',   park: 'surface', far: 1.0, cov: 55 },
+];
+function loadDemo(d) {
+  if (!d) return;
+  if (S.mode !== 'site') setMode('site');
+  const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
+  S.boundary = par.map(p => ({ ...p }));
+  const bb = PS.bbox(S.boundary);
+  S.buildings = []; S.obstacles = []; S.edgeSetback = {};
+  S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
+  S.solution = null; S.site = null; S.selStall = null;
+  $('#sUse').value = d.use;                                   // use type → presets + panel visibility
+  const pre = USE_PRESETS[d.use] || USE_PRESETS.multifamily;
+  $('#sFloorH').value = pre.floorH; $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;
+  $('#grpUnitMix').style.display = pre.resi ? '' : 'none';
+  $('#fRentResiRow').style.display = pre.resi ? '' : 'none';
+  $('#fRentCommRow').style.display = pre.resi ? 'none' : '';
+  $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
+  $('#zFAR').value = d.far != null ? d.far : 2.25;            // per-demo zoning (low-rise types get lower FAR/coverage)
+  $('#zCov').value = d.cov != null ? d.cov : 50;
+  const structured = d.park === 'structured';                 // parking type + levels
+  $('#sParkType').value = d.park || 'surface';
+  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = structured ? '' : 'none');
+  if (structured) { $('#sParkLevelsAbove').value = d.above != null ? d.above : 3; $('#sParkLevelsBelow').value = d.below != null ? d.below : 0; }
+  fitView();
+  doSolveSite();
+  toast(`範例：${d.label}`);
+}
+(() => {                                                       // populate the gallery dropdown (grouped)
+  const sel = $('#demoGallery'); if (!sel) return;
+  let og = null, lastG = '';
+  for (const d of DEMOS) {
+    if (d.g !== lastG) { og = document.createElement('optgroup'); og.label = d.g; sel.appendChild(og); lastG = d.g; }
+    const o = document.createElement('option'); o.value = d.key; o.textContent = d.label; og.appendChild(o);
+  }
+  sel.addEventListener('change', () => { const d = DEMOS.find(x => x.key === sel.value); if (d) loadDemo(d); sel.selectedIndex = 0; });
+})();
+
 // wiring
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 $('#sUse').addEventListener('change', () => {
@@ -1874,12 +2071,10 @@ $('#sUse').addEventListener('change', () => {
 });
 $('#sParkType').addEventListener('change', () => {
   const structured = $('#sParkType').value === 'structured';
-  $('#rowParkLevels').style.display = structured ? '' : 'none';
-  $('#rowStructEff').style.display = structured ? '' : 'none';
-  $('#parkTypeHint').style.display = structured ? '' : 'none';
+  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = structured ? '' : 'none');
   if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite();
 });
-['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevels', '#sStructEff',
+['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevelsAbove', '#sParkLevelsBelow', '#sStructEff',
  '#uxStudioP', '#ux1P', '#ux2P', '#ux3P', '#uxStudioS', '#ux1S', '#ux2S', '#ux3S',
  '#fLand', '#fHard', '#fSoft', '#fRentMo', '#fRentSf', '#fOpex', '#fGrowth', '#fHold', '#fExitCap'].forEach(sel =>
   $(sel).addEventListener('change', () => { updateUxSum(); if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); }));
@@ -2093,14 +2288,24 @@ function generateOptions() {
         { name: '均衡', mix: null },
         { name: '大坪', mix: [['studio', 5, 550], ['1br', 25, 750], ['2br', 45, 1050], ['3br', 25, 1350]] },
       ] : [{ name: '', mix: null }];
-      for (const b of biases) for (const a of [90, 60, 45]) {
+      // sweep PARKING TYPE too (surface vs structured garage) — surfaces a real decision:
+      // "surface can't meet the ratio → a 3-level deck does, at this yield"
+      const parkCfgs = [
+        { name: '地面停車', park: 'surface' },
+        { name: '車庫地上3層', park: 'structured', above: 3, below: 0 },
+        { name: '車庫地上2+地下2', park: 'structured', above: 2, below: 2 },
+      ];
+      for (const b of biases) for (const pc of parkCfgs) for (const a of [90, 60]) {
         const um = b.mix ? b.mix.map(m => ({ type: m[0], pct: m[1], size: m[2] })) : pbase.unitMix;
-        const sol = PS.solveSite({ boundary: S.boundary, p: { ...pbase, parkAngle: a, unitMix: um }, entrances: S.entrances, obstacles: S.obstacles });
+        const p = { ...pbase, parkAngle: a, unitMix: um, parkingType: pc.park,
+          parkingLevelsAbove: pc.above != null ? pc.above : 0, parkingLevelsBelow: pc.below != null ? pc.below : 0 };
+        const sol = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles });
         if (sol) out.push({
-          kind: 'site', parkAngle: a, unitMix: um, kpi: sol.parkingProvided, thumb: thumbFor(sol.parkSol, sol.footprint),
+          kind: 'site', parkAngle: a, unitMix: um, park: pc.park, above: pc.above, below: pc.below,
+          kpi: sol.parkingProvided, thumb: thumbFor(sol.parkSol, sol.footprint),
           k_park: sol.parkingProvided, k_yield: sol.fin.yieldOnCost, k_units: sol.units,
           big: sol.residential ? sol.units + ' 戶' : Math.round(U.A(sol.gfa)).toLocaleString() + ' ' + U.au(),
-          sub: `${b.name ? b.name + ' · ' : ''}停車 ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired}<br>Yield ${sol.fin.yieldOnCost.toFixed(1)}%`,
+          sub: `${pc.name}${b.name ? ' · ' + b.name : ''} · ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired}<br>Yield ${sol.fin.yieldOnCost.toFixed(1)}%`,
           pass: sol.parkingProvided >= sol.parkingRequired,
         });
       }
@@ -2141,6 +2346,12 @@ function applyOption(o) {
     closeModal(); doSolve();
   } else {
     S.siteParkAngle = o.parkAngle;
+    if (o.park) {                                     // apply the option's parking type + levels
+      $('#sParkType').value = o.park;
+      const structured = o.park === 'structured';
+      ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = structured ? '' : 'none');
+      if (structured) { $('#sParkLevelsAbove').value = o.above != null ? o.above : 3; $('#sParkLevelsBelow').value = o.below != null ? o.below : 0; }
+    }
     if (o.unitMix) {                                  // apply the option's unit-mix bias to the inputs
       const m = {}; o.unitMix.forEach(u => m[u.type] = u);
       const set = (t, p, s) => { if (m[t]) { $(p).value = m[t].pct; $(s).value = Math.round(U.A(m[t].size)); } };
