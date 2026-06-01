@@ -1760,6 +1760,9 @@ function readSiteParams() {
     maxCoverage: +$('#zCov').value, maxDUA: +$('#zDUA').value,
     setbacks: { front: U.Lr(+$('#zSbF').value), side: U.Lr(+$('#zSbS').value), rear: U.Lr(+$('#zSbR').value) },
     parkingRatio: +$('#zPark').value, parkAngle: S.siteParkAngle || 90, parkSetback: 5, evPct: 0,
+    parkingType: ($('#sParkType') ? $('#sParkType').value : 'surface'),
+    parkingLevels: ($('#sParkLevels') ? +$('#sParkLevels').value : 3) || 3,
+    structEff: ($('#sStructEff') ? +$('#sStructEff').value : 90) || 90,
     unitMix: [
       { type: 'studio', pct: +$('#uxStudioP').value, size: U.Ar(+$('#uxStudioS').value) },
       { type: '1br', pct: +$('#ux1P').value, size: U.Ar(+$('#ux1S').value) },
@@ -1815,7 +1818,10 @@ function updateSiteMetrics() {
       row.append(sw, nm, ct); bd.appendChild(row);
     });
     const pr = document.createElement('div'); pr.className = 'hint'; pr.style.marginTop = '4px';
-    pr.textContent = `停車 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}　·　土建成本 $${fmt(s.fin.totalCost)}　·　NOI $${fmt(s.fin.noi)}/年`;
+    const parkTxt = s.structured
+      ? `🏢 結構車庫 ${s.parkingLevels} 層 × ${s.parkingPerFloor}/層 × ${s.structEff}% = 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
+      : `🅿️ 地面停車 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`;
+    pr.textContent = `${parkTxt}　·　土建 $${fmt(s.fin.totalCost)}　·　NOI $${fmt(s.fin.noi)}/年`;
     bd.appendChild(pr);
   } else bd.innerHTML = '<div class="hint">畫好基地後按「自動配置建案」。</div>';
   renderCompliance(s);
@@ -1866,7 +1872,14 @@ $('#sUse').addEventListener('change', () => {
   $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
   if (S.boundary.length >= 3) doSolveSite();
 });
-['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark',
+$('#sParkType').addEventListener('change', () => {
+  const structured = $('#sParkType').value === 'structured';
+  $('#rowParkLevels').style.display = structured ? '' : 'none';
+  $('#rowStructEff').style.display = structured ? '' : 'none';
+  $('#parkTypeHint').style.display = structured ? '' : 'none';
+  if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite();
+});
+['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevels', '#sStructEff',
  '#uxStudioP', '#ux1P', '#ux2P', '#ux3P', '#uxStudioS', '#ux1S', '#ux2S', '#ux3S',
  '#fLand', '#fHard', '#fSoft', '#fRentMo', '#fRentSf', '#fOpex', '#fGrowth', '#fHold', '#fExitCap'].forEach(sel =>
   $(sel).addEventListener('change', () => { updateUxSum(); if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); }));

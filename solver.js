@@ -1096,16 +1096,34 @@ function solveSite(input) {
     unitsByType = mix.map(m => ({ type: m.type, count: Math.round(units * m.pct / sumPct), size: m.size }));
   }
 
-  // 5. parking required vs provided (pack the parcel minus the building)
+  // 5. parking required vs provided
   const parkingRequired = residential
     ? Math.ceil(units * p.parkingRatio)
     : Math.ceil(gfa / 1000 * p.parkingRatio);
-  const parkSol = solve({
-    boundary, buildings: [footprint], obstacles: input.obstacles || [], entrances: input.entrances,
-    params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
-    opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
-  });
-  const parkingProvided = parkSol ? parkSol.stalls.length : 0;
+  const structured = p.parkingType === 'structured';
+  let parkSol, parkingProvided, parkingPerFloor = 0;
+  const parkingLevels = structured ? Math.max(1, Math.round(p.parkingLevels || 3)) : 1;
+  const structEff = (p.structEff == null ? 90 : p.structEff);          // ramp + cores + columns discount (%)
+  if (structured) {
+    // MULTI-LEVEL GARAGE: pack the building footprint as one parking deck, then stack levels.
+    // The raw deck pack already includes drive aisles; the efficiency factor discounts what a
+    // real structure loses to ramps, vertical cores and the column grid (transparent, user-tunable).
+    const deck = solve({
+      boundary: footprint, buildings: [], obstacles: [], entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: 0, orient: 'auto', access: 'open' },
+      opts: { adaMode: 'off', adaManual: 0, evPct: 0, compactPct: 0 },
+    });
+    parkingPerFloor = deck ? deck.stalls.length : 0;
+    parkingProvided = Math.round(parkingPerFloor * parkingLevels * structEff / 100);
+    parkSol = deck;                                                    // draw the typical deck
+  } else {
+    parkSol = solve({
+      boundary, buildings: [footprint], obstacles: input.obstacles || [], entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
+      opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
+    });
+    parkingProvided = parkSol ? parkSol.stalls.length : 0;
+  }
 
   // 6. financials
   const fin = computeFinancials(p.fin, { gfa, nrsf, units, residential });
@@ -1115,7 +1133,8 @@ function solveSite(input) {
     { k: 'FAR 容積', ok: far <= p.maxFAR + 1e-6, val: `${far.toFixed(2)} / 上限 ${p.maxFAR}` },
     { k: '高度 Height', ok: height <= p.maxHeight + 1e-6, val: `${Math.round(height)}ft · ${floors}F / 上限 ${p.maxHeight}ft` },
     { k: '建蔽率 Coverage', ok: coverage <= p.maxCoverage + 0.5, val: `${coverage.toFixed(0)}% / 上限 ${p.maxCoverage}%` },
-    { k: '停車 Parking', ok: parkingProvided >= parkingRequired, val: `${parkingProvided} / 需 ${parkingRequired}` },
+    { k: '停車 Parking', ok: parkingProvided >= parkingRequired,
+      val: structured ? `${parkingProvided} / 需 ${parkingRequired}（${parkingLevels}層×${parkingPerFloor}/層×${structEff}%）` : `${parkingProvided} / 需 ${parkingRequired}` },
   ];
   if (residential && p.maxDUA > 0)
     compliance.push({ k: '密度 Density', ok: units / acres <= p.maxDUA + 0.5, val: `${(units / acres).toFixed(1)} / 上限 ${p.maxDUA} DU/ac` });
@@ -1123,6 +1142,7 @@ function solveSite(input) {
   return {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
+    structured, parkingLevels, parkingPerFloor, structEff,
   };
 }
 
