@@ -1004,7 +1004,7 @@ function entranceAt(w) {                    // pick an entrance near world point
   return null;
 }
 
-cv.addEventListener('mousedown', e => {
+cv.addEventListener('pointerdown', e => {
   const w = evtWorld(e);
   // map mode: still allow grabbing vertices/entrances in select; otherwise
   // empty-space drag pans the underlying real map.
@@ -1101,7 +1101,7 @@ cv.addEventListener('mousedown', e => {
   }
 });
 
-cv.addEventListener('mousemove', e => {
+cv.addEventListener('pointermove', e => {
   const w = evtWorld(e);
   S.hoverWorld = ['boundary', 'building', 'obstacle', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
   if ((S.tool === 'subdivide' && S.splitPt) || (S.tool === 'measure' && S.measureStart)) draw();
@@ -1128,7 +1128,7 @@ cv.addEventListener('mousemove', e => {
   if (S.draft) draw();
 });
 
-window.addEventListener('mouseup', () => {
+window.addEventListener('pointerup', () => {
   if (S.panning) { S.panning = false; cv.style.cursor = ''; }
   if (S.mapPanning) { S.mapPanning = null; cv.style.cursor = ''; }
   const moved = S.dragVertex || S.dragEntrance;
@@ -2202,6 +2202,7 @@ document.querySelectorAll('#twPanel input[name=twbase]').forEach(r => r.addEvent
 document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventListener('change', () => setOverlay(c.dataset.ov, c.checked)));
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
 $('#btnCloud').onclick = openCloudModal;
+$('#panelToggle').onclick = () => { const open = $('#panel').classList.toggle('open'); $('#panelToggle').innerHTML = open ? '✕ 收起面板' : '⚙ 參數'; };
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
 $('#addrInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.stopPropagation(); geocode($('#addrInput').value); } });
 $('#tSat').onclick = () => setTile(true);
