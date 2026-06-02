@@ -1985,7 +1985,9 @@ function updateSiteMetrics() {
       row.append(sw, nm, ct); bd.appendChild(row);
     });
     const pr = document.createElement('div'); pr.className = 'hint'; pr.style.marginTop = '4px';
-    const parkTxt = s.structured
+    const parkTxt = s.isWrap
+      ? `🏟️ 環繞車庫 地上${s.levelsAbove}+地下${s.levelsBelow}層 × ${s.parkingPerFloor}/層（核心）= 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
+      : s.structured
       ? `🏢 結構車庫 地上${s.levelsAbove}+地下${s.levelsBelow}層 × ${s.parkingPerFloor}/層 × ${s.structEff}% = 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
       : `🅿️ 地面停車 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`;
     pr.textContent = `${parkTxt}　·　土建 $${fmt(s.fin.totalCost)}　·　NOI $${fmt(s.fin.noi)}/年`;
