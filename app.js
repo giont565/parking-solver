@@ -2187,6 +2187,7 @@ $('#btnTwLayers').onclick = () => {
 document.querySelectorAll('#twPanel input[name=twbase]').forEach(r => r.addEventListener('change', () => setBase(r.value)));
 document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventListener('change', () => setOverlay(c.dataset.ov, c.checked)));
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
+$('#btnCloud').onclick = openCloudModal;
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
 $('#addrInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.stopPropagation(); geocode($('#addrInput').value); } });
 $('#tSat').onclick = () => setTile(true);
@@ -2826,6 +2827,97 @@ function setActiveParcel(i) {
   fitView();
 }
 
+/* ============================ CLOUD (Firebase Auth + Firestore) ============================ */
+/* The Firebase SDK is lazy-loaded from CDN only when the user first touches a cloud feature, so
+   the offline core (localStorage) is never affected. apiKey here is a PUBLIC web key (safe in
+   client code); real security is the Firestore rules + Auth, not this key. */
+const FB_CFG = {
+  apiKey: "AIzaSyCIeDm4-ZVVu0hKVIy5TyG9Xl703C05tak",
+  authDomain: "test-23513.firebaseapp.com",
+  projectId: "test-23513",
+  storageBucket: "test-23513.firebasestorage.app",
+  messagingSenderId: "258434107044",
+  appId: "1:258434107044:web:a0fcb452642480e87b8831",
+};
+const FB_VER = '10.12.2';
+let _fb = null, _fbUser = null;
+function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('SDK 載入失敗：' + src)); document.head.appendChild(s); }); }
+async function cloudInit() {
+  if (_fb) return _fb;
+  const base = `https://www.gstatic.com/firebasejs/${FB_VER}/`;
+  await loadScript(base + 'firebase-app-compat.js');
+  await Promise.all([loadScript(base + 'firebase-auth-compat.js'), loadScript(base + 'firebase-firestore-compat.js')]);
+  const fb = window.firebase;
+  fb.initializeApp(FB_CFG);
+  _fb = { auth: fb.auth(), db: fb.firestore(), fb };
+  _fb.auth.onAuthStateChanged(u => { _fbUser = u; updateCloudBtn(); if ($('#modal').classList.contains('show') && $('#cloudBody')) renderCloudModal(); });
+  return _fb;
+}
+function updateCloudBtn() { const b = $('#btnCloud'); if (b) b.classList.toggle('on', !!_fbUser); }
+function cloudProject() { const s = serialize(); delete s.solution; delete s.site; return s; }   // inputs only → small doc, re-solve on load
+function loadCloudData(d) { deserialize(d); setTimeout(() => { if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); } else if (S.boundary.length >= 3) doSolve(); }, 40); }
+async function cloudShareLink() {
+  const { db } = await cloudInit();
+  const ref = await db.collection('shared').add({ data: JSON.stringify(cloudProject()), created: Date.now(), by: _fbUser ? _fbUser.uid : null });
+  return location.origin + location.pathname + '?p=' + ref.id;
+}
+async function cloudOpenShared(id) {
+  try { const { db } = await cloudInit(); const doc = await db.collection('shared').doc(id).get();
+    if (doc.exists) { loadCloudData(JSON.parse(doc.data().data)); toast('已載入分享的方案（唯讀檢視）'); }
+    else toast('找不到這個分享連結'); }
+  catch (e) { toast('載入分享失敗：' + e.message); }
+}
+function openCloudModal() {
+  openModal('☁️ 雲端 Cloud', '<div id="cloudBody" style="min-height:120px"><div class="hint">連線中…</div></div>');
+  cloudInit().then(renderCloudModal).catch(e => { const b = $('#cloudBody'); if (b) b.innerHTML = `<div class="hint" style="color:#fca5a5">雲端連線失敗：${esc(e.message)}<br>（請確認有網路；離線時雲端功能無法使用，但工具其他部分照常）</div>`; });
+}
+function renderCloudModal() {
+  const b = $('#cloudBody'); if (!b) return;
+  const inp = 'style="width:100%;background:#0f1a2b;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px 9px;font-size:13px;margin:3px 0"';
+  if (!_fbUser) {
+    b.innerHTML = `
+      <div class="hint" style="margin-bottom:8px">登入後可把方案存到雲端、跨裝置開啟、產生分享連結。</div>
+      <button class="btn" id="cgoog" style="width:100%;justify-content:center;margin-bottom:10px">使用 Google 登入</button>
+      <div class="hint">或用 Email：</div>
+      <input id="cem" type="email" placeholder="email" ${inp}><input id="cpw" type="password" placeholder="密碼（至少 6 碼）" ${inp}>
+      <div class="row2" style="display:flex;gap:6px;margin-top:6px"><button class="btn" id="cin" style="flex:1;justify-content:center">登入</button><button class="btn" id="creg" style="flex:1;justify-content:center">註冊新帳號</button></div>
+      <div class="hint" id="cerr" style="color:#fca5a5;margin-top:6px"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:12px 0">
+      <button class="btn" id="cshare" style="width:100%;justify-content:center">🔗 只產生分享連結（免登入需先登入一次）</button>`;
+    $('#cgoog').onclick = () => cloudInit().then(({ auth, fb }) => auth.signInWithPopup(new fb.auth.GoogleAuthProvider())).catch(e => $('#cerr').textContent = e.message);
+    const em = () => $('#cem').value.trim(), pw = () => $('#cpw').value;
+    $('#cin').onclick = () => cloudInit().then(({ auth }) => auth.signInWithEmailAndPassword(em(), pw())).catch(e => $('#cerr').textContent = e.message);
+    $('#creg').onclick = () => cloudInit().then(({ auth }) => auth.createUserWithEmailAndPassword(em(), pw())).catch(e => $('#cerr').textContent = e.message);
+    $('#cshare').onclick = () => $('#cerr').textContent = '請先登入才能分享';
+  } else {
+    b.innerHTML = `
+      <div class="hint" style="margin-bottom:8px">已登入：<b>${esc(_fbUser.email || _fbUser.displayName || '使用者')}</b></div>
+      <div class="field"><input id="cname" type="text" placeholder="方案名稱" value="${esc(($('#sUse')&&S.mode==='site'?$('#sUse').selectedOptions[0].text:'停車場')+' '+new Date().toLocaleDateString())}" ${inp.replace('width:100%','flex:1')}><button class="btn primary" id="csave" style="justify-content:center">💾 存到雲端</button></div>
+      <button class="btn" id="cshare2" style="width:100%;justify-content:center;margin:8px 0">🔗 產生分享連結（唯讀）</button>
+      <div class="hint" id="clink" style="word-break:break-all;color:#7dd3fc"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:10px 0">
+      <div class="hint" style="margin-bottom:4px">我的雲端方案：</div>
+      <div id="clist"><div class="hint">載入中…</div></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:10px 0">
+      <button class="btn ghost" id="cout" style="width:100%;justify-content:center">登出</button>
+      <div class="hint" id="cerr" style="color:#fca5a5;margin-top:6px"></div>`;
+    $('#csave').onclick = async () => { try { const { db } = await cloudInit(); await db.collection('users').doc(_fbUser.uid).collection('projects').add({ name: $('#cname').value || '未命名', data: JSON.stringify(cloudProject()), updated: Date.now() }); toast('已存到雲端'); listMine(); } catch (e) { $('#cerr').textContent = e.message; } };
+    $('#cshare2').onclick = async () => { try { $('#clink').textContent = '產生中…'; const url = await cloudShareLink(); $('#clink').innerHTML = `分享連結：<a href="${esc(url)}" target="_blank" style="color:#7dd3fc">${esc(url)}</a>`; try { await navigator.clipboard.writeText(url); toast('分享連結已複製'); } catch (e) {} } catch (e) { $('#cerr').textContent = e.message; } };
+    $('#cout').onclick = () => cloudInit().then(({ auth }) => auth.signOut());
+    listMine();
+  }
+}
+async function listMine() {
+  const el = $('#clist'); if (!el) return;
+  try { const { db } = await cloudInit();
+    const snap = await db.collection('users').doc(_fbUser.uid).collection('projects').orderBy('updated', 'desc').get();
+    if (snap.empty) { el.innerHTML = '<div class="hint">（還沒有存過方案）</div>'; return; }
+    el.innerHTML = snap.docs.map(d => { const x = d.data(); return `<div class="field" style="gap:6px"><span style="flex:1;font-size:13px">${esc(x.name || '未命名')}</span><button class="btn ghost cload" data-id="${d.id}" style="padding:3px 8px">開啟</button><button class="btn ghost cdel" data-id="${d.id}" style="padding:3px 8px">刪</button></div>`; }).join('');
+    el.querySelectorAll('.cload').forEach(bn => bn.onclick = async () => { const { db } = await cloudInit(); const doc = await db.collection('users').doc(_fbUser.uid).collection('projects').doc(bn.dataset.id).get(); if (doc.exists) { loadCloudData(JSON.parse(doc.data().data)); closeModal(); toast('已從雲端開啟'); } });
+    el.querySelectorAll('.cdel').forEach(bn => bn.onclick = async () => { const { db } = await cloudInit(); await db.collection('users').doc(_fbUser.uid).collection('projects').doc(bn.dataset.id).delete(); listMine(); });
+  } catch (e) { el.innerHTML = `<div class="hint" style="color:#fca5a5">${esc(e.message)}</div>`; }
+}
+
 /* ------------------------------- boot ------------------------------------ */
 function boot() {
   buildLegend();
@@ -2851,6 +2943,8 @@ function boot() {
   });
   ro.observe($('#stage'));
   setTimeout(() => { $('#help').style.display = 'none'; }, 9000);  // auto-hide help
+  const shareId = new URLSearchParams(location.search).get('p');   // ?p=<id> → open a shared project (no login needed)
+  if (shareId) setTimeout(() => cloudOpenShared(shareId), 200);
 }
 boot();
 
