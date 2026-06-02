@@ -2895,13 +2895,11 @@ function renderCloudModal() {
       <input id="cem" type="email" placeholder="email" ${inp}><input id="cpw" type="password" placeholder="密碼（至少 6 碼）" ${inp}>
       <div class="row2" style="display:flex;gap:6px;margin-top:6px"><button class="btn" id="cin" style="flex:1;justify-content:center">登入</button><button class="btn" id="creg" style="flex:1;justify-content:center">註冊新帳號</button></div>
       <div class="hint" id="cerr" style="color:#fca5a5;margin-top:6px"></div>
-      <hr style="border:none;border-top:1px solid var(--line);margin:12px 0">
-      <button class="btn" id="cshare" style="width:100%;justify-content:center">🔗 只產生分享連結（免登入需先登入一次）</button>`;
+      <div class="hint" style="margin-top:10px;color:var(--muted)">登入後即可：存方案到雲端、跨裝置開啟、產生唯讀分享連結。</div>`;
     $('#cgoog').onclick = () => cloudInit().then(({ auth, fb }) => auth.signInWithPopup(new fb.auth.GoogleAuthProvider())).catch(e => $('#cerr').textContent = e.message);
     const em = () => $('#cem').value.trim(), pw = () => $('#cpw').value;
     $('#cin').onclick = () => cloudInit().then(({ auth }) => auth.signInWithEmailAndPassword(em(), pw())).catch(e => $('#cerr').textContent = e.message);
     $('#creg').onclick = () => cloudInit().then(({ auth }) => auth.createUserWithEmailAndPassword(em(), pw())).catch(e => $('#cerr').textContent = e.message);
-    $('#cshare').onclick = () => $('#cerr').textContent = '請先登入才能分享';
   } else {
     b.innerHTML = `
       <div class="hint" style="margin-bottom:8px">已登入：<b>${esc(_fbUser.email || _fbUser.displayName || '使用者')}</b></div>
