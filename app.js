@@ -2042,6 +2042,7 @@ const DEMOS = [
   { key: 'pk-above', g: '停車型態', label: '結構車庫·地上3層',   parcel: 'sample', use: 'multifamily', park: 'structured', above: 3, below: 0 },
   { key: 'pk-below', g: '停車型態', label: '結構車庫·地下3層',   parcel: 'sample', use: 'multifamily', park: 'structured', above: 0, below: 3 },
   { key: 'pk-mix',   g: '停車型態', label: '地上2+地下2 混合',    parcel: 'sample', use: 'multifamily', park: 'structured', above: 2, below: 2 },
+  { key: 'pk-wrap',  g: '停車型態', label: '環繞車庫 Wrap',       parcel: 'sample', use: 'multifamily', park: 'wrap', above: 5, below: 0 },
   { key: 'u-mf',  g: '建築用途', label: '多戶住宅 Multifamily',   parcel: 'sample', use: 'multifamily',  park: 'structured', above: 3, below: 0 },
   { key: 'u-sf',  g: '建築用途', label: '獨棟/連棟 Single-family', parcel: 'sample', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35 },
   { key: 'u-mix', g: '建築用途', label: '複合用途 Mixed-use',     parcel: 'sample', use: 'mixeduse',     park: 'structured', above: 2, below: 1 },
@@ -2069,10 +2070,10 @@ function loadDemo(d) {
   $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
   $('#zFAR').value = d.far != null ? d.far : 2.25;            // per-demo zoning (low-rise types get lower FAR/coverage)
   $('#zCov').value = d.cov != null ? d.cov : 50;
-  const structured = d.park === 'structured';                 // parking type + levels
+  const deck = ['structured', 'wrap'].includes(d.park);       // both stack parking decks → show level controls
   $('#sParkType').value = d.park || 'surface';
-  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = structured ? '' : 'none');
-  if (structured) { $('#sParkLevelsAbove').value = d.above != null ? d.above : 3; $('#sParkLevelsBelow').value = d.below != null ? d.below : 0; }
+  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
+  if (deck) { $('#sParkLevelsAbove').value = d.above != null ? d.above : 3; $('#sParkLevelsBelow').value = d.below != null ? d.below : 0; }
   fitView();
   doSolveSite();
   toast(`範例：${d.label}`);
