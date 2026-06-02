@@ -1138,6 +1138,12 @@ function solveSite(input) {
   let footprint = envelope;
   if (envArea > maxCovArea && envArea > 0) footprint = polyScaleAbout(envelope, Math.sqrt(maxCovArea / envArea));
   const footArea = polyArea(footprint);
+  // WRAP type: residential wraps a structured parking CORE (an inner inset of the footprint).
+  // Rentable area is the RING (footprint − core); the core is the garage.
+  const isWrap = p.parkingType === 'wrap';
+  const wrapCore = isWrap ? polyScaleAbout(footprint, 0.6, centroid(footprint)) : null;
+  const coreArea = wrapCore ? polyArea(wrapCore) : 0;
+  const resiFootArea = Math.max(footArea - coreArea, 1);
 
   // 3. floors — limited by height AND by FAR
   const floorsByHeight = Math.max(1, Math.floor(p.maxHeight / p.floorHeight));
@@ -1147,7 +1153,7 @@ function solveSite(input) {
   const gfa = footArea * floors;
   const far = gfa / parcelArea;
   const coverage = footArea / parcelArea * 100;
-  const nrsf = gfa * p.efficiency;
+  const nrsf = (isWrap ? resiFootArea : footArea) * floors * p.efficiency;   // wrap: only the ring is rentable
 
   // 4. units (residential) or none (commercial/industrial)
   let units = 0, unitsByType = [], densityCapped = false, subdivision = null;
@@ -1170,23 +1176,25 @@ function solveSite(input) {
     ? Math.ceil(units * p.parkingRatio)
     : Math.ceil(gfa / 1000 * p.parkingRatio);
   const structured = p.parkingType === 'structured';
+  const deckType = structured || isWrap;                               // both stack multi-level parking decks
   let parkSol, parkingProvided, parkingPerFloor = 0, garage = null;
   // levels split: above grade (podium, counts toward height) + below grade (basement, excluded from height/FAR)
-  const levelsAbove = structured ? Math.max(0, Math.round(p.parkingLevelsAbove != null ? p.parkingLevelsAbove : (p.parkingLevels || 3))) : 0;
-  const levelsBelow = structured ? Math.max(0, Math.round(p.parkingLevelsBelow || 0)) : 0;
-  const parkingLevels = structured ? Math.max(1, levelsAbove + levelsBelow) : 1;
+  const levelsAbove = deckType ? Math.max(0, Math.round(p.parkingLevelsAbove != null ? p.parkingLevelsAbove : (p.parkingLevels || 3))) : 0;
+  const levelsBelow = deckType ? Math.max(0, Math.round(p.parkingLevelsBelow || 0)) : 0;
+  const parkingLevels = deckType ? Math.max(1, levelsAbove + levelsBelow) : 1;
   const structEff = (p.structEff == null ? 95 : p.structEff);          // cores/columns residual (ramp now removed explicitly)
   if (subdivision) {
     // TOWNHOMES self-park: each lot has its own driveway/garage (~2 spaces), no separate surface lot.
     parkSol = { stalls: [], aisles: [], connectors: [] };
     parkingProvided = units * 2;
-  } else if (structured) {
-    // MULTI-LEVEL GARAGE: pack the footprint as one deck (real ramp + columns), then stack levels.
-    const d = structuredDeck(footprint, p, input.entrances);
+  } else if (deckType) {
+    // MULTI-LEVEL GARAGE: structured = deck over the whole footprint; wrap = deck over the inner core.
+    const deckPoly = isWrap ? wrapCore : footprint;
+    const d = structuredDeck(deckPoly, p, input.entrances);
     parkingPerFloor = d.perFloor;
     parkingProvided = Math.round(parkingPerFloor * parkingLevels * structEff / 100);
     parkSol = { stalls: d.stalls, aisles: d.aisles, connectors: [] };  // typical deck for the 2D plan
-    garage = { ramp: d.ramp, columns: d.columns, theta: d.theta, levelsAbove, levelsBelow, floorHeight: p.floorHeight };
+    garage = { ramp: d.ramp, columns: d.columns, theta: d.theta, levelsAbove, levelsBelow, floorHeight: p.floorHeight, deckPoly, wrap: isWrap };
   } else {
     parkSol = solve({
       boundary, buildings: [footprint], obstacles: input.obstacles || [], entrances: input.entrances,
@@ -1205,7 +1213,7 @@ function solveSite(input) {
     { k: '高度 Height', ok: height <= p.maxHeight + 1e-6, val: `${Math.round(height)}ft · ${floors}F / 上限 ${p.maxHeight}ft` },
     { k: '建蔽率 Coverage', ok: coverage <= p.maxCoverage + 0.5, val: `${coverage.toFixed(0)}% / 上限 ${p.maxCoverage}%` },
     { k: '停車 Parking', ok: parkingProvided >= parkingRequired,
-      val: structured ? `${parkingProvided} / 需 ${parkingRequired}（地上${levelsAbove}+地下${levelsBelow}層 × ${parkingPerFloor}/層 × ${structEff}%）` : `${parkingProvided} / 需 ${parkingRequired}` },
+      val: deckType ? `${parkingProvided} / 需 ${parkingRequired}（${isWrap ? '環繞核心 ' : ''}地上${levelsAbove}+地下${levelsBelow}層 × ${parkingPerFloor}/層 × ${structEff}%）` : `${parkingProvided} / 需 ${parkingRequired}` },
   ];
   if (residential && p.maxDUA > 0)
     compliance.push({ k: '密度 Density', ok: units / acres <= p.maxDUA + 0.5, val: `${(units / acres).toFixed(1)} / 上限 ${p.maxDUA} DU/ac` });
@@ -1214,6 +1222,7 @@ function solveSite(input) {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
     structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision,
+    isWrap, wrapCore,
   };
 }
 

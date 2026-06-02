@@ -313,7 +313,7 @@ function draw() {
     ctx.restore();
     for (const s of park.stalls) drawStall(s);
     // structured garage: the express RAMP + the structural COLUMN grid on the typical deck
-    if (S.mode === 'site' && S.site && S.site.structured && S.site.garage) {
+    if (S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap) && S.site.garage) {
       const g = S.site.garage;
       if (g.ramp) {
         pathPoly(g.ramp, true);
@@ -352,6 +352,14 @@ function draw() {
       (sub.drives || []).forEach(d => { pathPoly(d, true); ctx.fillStyle = 'rgba(148,163,184,.30)'; ctx.fill(); });   // access drives
       sub.units.forEach(u => { pathPoly(u, true); ctx.fillStyle = 'rgba(56,189,248,.5)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); });
       labelPoly(S.site.footprint && S.site.footprint.length >= 3 ? S.site.footprint : S.boundary, `${sub.count} 戶連棟 · ${S.site.floors}F`, '#e2e8f0');
+    } else if (S.site.isWrap && S.site.wrapCore && S.site.footprint && S.site.footprint.length >= 3) {
+      // WRAP: residential RING = footprint with the parking core cut out (the garage deck shows in the hole)
+      ctx.beginPath();
+      S.site.footprint.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath();
+      S.site.wrapCore.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath();
+      ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill('evenodd');
+      ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; pathPoly(S.site.footprint, true); ctx.stroke(); pathPoly(S.site.wrapCore, true); ctx.stroke();
+      labelPoly(S.site.footprint, `環繞 · ${S.site.units} 戶 · ${S.site.floors}F`, '#e2e8f0');
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
       pathPoly(S.site.footprint, true);
       ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill();
@@ -856,12 +864,12 @@ function draw3D() {
   // collect all faces, depth-sort (painter's algorithm)
   const faces = [];
   const baseDepth = poly => Math.max(...poly.map(p => p.x + p.y));
-  const structured = S.mode === 'site' && S.site && S.site.structured && S.site.garage && S.site.parkSol;
+  const structured = S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap) && S.site.garage && S.site.parkSol;
   const park3d = S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution;
   if (structured) {
     // MULTI-LEVEL GARAGE: stack the typical deck at every level — podium decks up from grade,
     // basement decks below it — plus the real express ramp on each, and columns as posts.
-    const g = S.site.garage, fh = g.floorHeight || 11, deck = park3d, foot = S.site.footprint;
+    const g = S.site.garage, fh = g.floorHeight || 11, deck = park3d, foot = g.deckPoly || S.site.footprint;
     const zs = [];
     for (let k = 0; k < g.levelsAbove; k++) zs.push(k * fh);
     for (let k = 1; k <= g.levelsBelow; k++) zs.push(-k * fh);
@@ -901,9 +909,12 @@ function draw3D() {
       (sub.drives || []).forEach(d => faces.push({ pts: d.map(p => ({ x: p.x, y: p.y, z: 0.02 })), fill: 'rgba(148,163,184,.28)', stroke: 'rgba(148,163,184,.5)', depth: baseDepthArr(d), z: 0.02 }));
       const uh = Math.max(S.site.height, 20);
       sub.units.forEach(u => pushBox(faces, u, uh, '#0ea5e9', null, true, null, 0));
+    } else if (S.site.isWrap && S.site.wrapCore && S.site.footprint && S.site.footprint.length >= 3) {
+      // WRAP: residential RING = footprint with the parking core punched out (core decks show through)
+      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, [S.site.wrapCore], 0, 0.45);
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
-      const podium = structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
-      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, structured ? 0.4 : null);
+      const podium = S.site.structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
+      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, S.site.structured ? 0.4 : null);
     }
   }
 
@@ -2086,8 +2097,8 @@ $('#sUse').addEventListener('change', () => {
   if (S.boundary.length >= 3) doSolveSite();
 });
 $('#sParkType').addEventListener('change', () => {
-  const structured = $('#sParkType').value === 'structured';
-  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = structured ? '' : 'none');
+  const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
+  ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
   if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite();
 });
 ['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevelsAbove', '#sParkLevelsBelow', '#sStructEff',
