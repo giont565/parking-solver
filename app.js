@@ -17,6 +17,7 @@ const S = {
   roadLines: [],           // [{line:[pts], width}] road centre-lines — rendered as smooth continuous roads
   roadWidth: 24,           // ft, internal road width
   parkZones: [],           // [poly] free-shape parking areas — when set, stalls pack ONLY inside these
+  manualCores: [],         // [poly] user-placed service cores (stairs+elevators); override the auto core when present
   entrances: [],           // [{x,y}]
   solution: null,          // result from PS.solve
   tool: 'select',
@@ -47,6 +48,7 @@ const S = {
     entrance: { vis: true, lock: false },
     trees:    { vis: true },
     flow:     { vis: false },        // 動線體檢 congestion heat-map layer (off by default)
+    earthwork:{ vis: false },        // 挖填方 cut/fill gradation layer (off by default)
   },
 };
 
@@ -55,7 +57,7 @@ const COLORS = {
 };
 const LABELS = { standard:'標準 Standard', compact:'小型 Compact', ada:'♿ 無障礙 ADA', ev:'⚡ EV 充電', trailer:'拖車 Trailer', moto:'🏍️ 機車 Motorcycle' };
 // object-tree eye/lock capabilities per category (site can't be hidden, trees can't be locked)
-const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1}, flow:{vis:1} };
+const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1}, flow:{vis:1}, earthwork:{vis:1} };
 // beds / baths per unit type (for DU/AC · Beds · Baths tabulation)
 const BEDS = { studio:0, '1br':1, '2br':2, '3br':3 }, BATHS = { studio:1, '1br':1, '2br':2, '3br':2 };
 // a category is interactive only when visible AND unlocked
@@ -407,8 +409,8 @@ function draw() {
       const lbl = S.site.hotel ? `旅館 ${S.site.keys} 房 · ${S.site.floors}F` : `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`;
       labelPoly(S.site.footprint, lbl, '#e2e8f0');
     }
-    // AUTO CORE: service core (stairs + elevators) drawn in the building plan
-    (S.site.cores || []).forEach(core => {
+    // SERVICE CORES (stairs + elevators): user-placed cores override the auto-placed one when present
+    ((S.manualCores && S.manualCores.length) ? S.manualCores : (S.site.cores || [])).forEach(core => {
       pathPoly(core, true); ctx.fillStyle = 'rgba(15,23,42,.6)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(226,232,240,.7)'; ctx.stroke();
       const cc = PS.centroid(core), sc = toScreen(cc);
       ctx.fillStyle = 'rgba(241,245,249,.95)'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('核心', sc.x, sc.y);
@@ -447,6 +449,7 @@ function draw() {
   }
   // landscape trees (over parking/buildings, under markers)
   drawFlowOverlay();
+  drawEarthwork();
   drawTrees();
   // entrances
   if (S.layers.entrance.vis) for (const e of S.entrances) drawEntrance(e);
@@ -782,6 +785,41 @@ function drawFlowOverlay() {
     ctx.fillStyle = `rgba(${(244 - 64 * t) | 0},${(63 - 48 * t) | 0},${(63 - 43 * t) | 0},${(0.06 + 0.62 * t).toFixed(2)})`;
     ctx.fillRect(s.x - px / 2, s.y - px / 2, px + 1, px + 1);
   }
+  ctx.restore();
+}
+// CUT & FILL: model existing ground as a bilinear surface from the 4 corner spot-elevations, sample the parcel
+// on a grid, and tally cut (ground above pad) vs fill (below) volumes → earthwork cost. Balance pad = mean ground.
+function computeEarthwork() {
+  const out = $('#ewResult'); if (!out) return;
+  if (S.boundary.length < 3) { out.textContent = '先畫基地。'; S._ewCache = null; return; }
+  const NW = +$('#eNW').value, NE = +$('#eNE').value, SW = +$('#eSW').value, SE = +$('#eSE').value;
+  if (!NW && !NE && !SW && !SE) { out.textContent = '輸入四角標高後自動算挖填量與土方成本。'; S._ewCache = null; return; }
+  const pad = +$('#ePad').value, cutC = +$('#eCutC').value, fillC = +$('#eFillC').value, haulC = +$('#eHaulC').value;
+  const bb = PS.bbox(S.boundary), CELL = 5, dx = Math.max(bb.maxX - bb.minX, 1), dy = Math.max(bb.maxY - bb.minY, 1);
+  const cellA = CELL * CELL; let cut = 0, fill = 0, gSum = 0, gA = 0; const cells = [];
+  for (let y = bb.minY + CELL / 2; y < bb.maxY; y += CELL) for (let x = bb.minX + CELL / 2; x < bb.maxX; x += CELL) {
+    if (!PS.pointInPoly({ x, y }, S.boundary)) continue;
+    const u = (x - bb.minX) / dx, v = (y - bb.minY) / dy;
+    const g = (SW * (1 - u) + SE * u) * (1 - v) + (NW * (1 - u) + NE * u) * v;   // bilinear ground
+    const d = g - pad; if (d > 0) cut += d * cellA; else fill += -d * cellA;
+    gSum += g * cellA; gA += cellA; cells.push({ x, y, d });
+  }
+  const cutY = cut / 27, fillY = fill / 27, net = cutY - fillY, balance = gA ? gSum / gA : 0;   // cubic yards
+  S._ewBalance = balance;
+  const cost = cutY * cutC + fillY * fillC + Math.abs(net) * haulC;
+  const fmt = n => Math.round(n).toLocaleString();
+  out.innerHTML = `挖 <b>${fmt(cutY)}</b> yd³ ・ 填 <b>${fmt(fillY)}</b> yd³ ・ ${net >= 0 ? '外運 export' : '進土 import'} <b>${fmt(Math.abs(net))}</b> yd³<br>土方成本約 <b>$${fmt(cost)}</b> ・ 平衡整平高 ≈ <b>${balance.toFixed(1)} ft</b>（挖填相抵、免外運）`;
+  S._ewCache = { cells, max: Math.max(1, ...cells.map(c => Math.abs(c.d))), cell: CELL };
+  draw();
+}
+function drawEarthwork() {                       // cut = warm/red (above pad), fill = cool/blue (below pad)
+  if (!S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || S.mapMode || !S._ewCache) return;
+  const f = S._ewCache; if (!f.cells.length) return;
+  const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), px = Math.max(2, Math.hypot(b.x - a.x, b.y - a.y) * f.cell);
+  ctx.save(); pathPoly(S.boundary, true); ctx.clip();
+  for (const c of f.cells) { const s = toScreen(c), t = Math.min(1, Math.abs(c.d) / f.max);
+    ctx.fillStyle = c.d >= 0 ? `rgba(220,38,38,${(0.08 + 0.5 * t).toFixed(2)})` : `rgba(37,99,235,${(0.08 + 0.5 * t).toFixed(2)})`;
+    ctx.fillRect(s.x - px / 2, s.y - px / 2, px + 1, px + 1); }
   ctx.restore();
 }
 function drawTrees() {
@@ -1245,6 +1283,19 @@ cv.addEventListener('pointerdown', e => {
     return;
   }
 
+  if (S.tool === 'core') {                // manually place / remove a service core (stairs + elevators), site mode
+    if (S.mode !== 'site') { toast('核心是建案模式用的（先切「建案規劃」）'); return; }
+    const hit = (S.manualCores || []).findIndex(c => PS.pointInPoly(w, c));
+    if (hit >= 0) { S.manualCores.splice(hit, 1); toast('已移除核心'); }
+    else {
+      const Wc = 30, Dc = 44, cc = (sx, sy) => ({ x: w.x + sx, y: w.y + sy });   // ~stairs + elevator bank (ft)
+      S.manualCores.push([cc(-Wc / 2, -Dc / 2), cc(Wc / 2, -Dc / 2), cc(Wc / 2, Dc / 2), cc(-Wc / 2, Dc / 2)]);
+      toast('已放一個服務核心（再點它可移除）');
+    }
+    draw(); commit();
+    return;
+  }
+
   if (S.tool === 'measure') {             // two clicks → a dimension annotation
     const sp = snap(w);
     if (!S.measureStart) { S.measureStart = sp; toast('再點第二點量出距離（右鍵清除全部）'); draw(); }
@@ -1448,7 +1499,7 @@ window.addEventListener('keydown', e => {
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', z:'parkzone', k:'stall', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -1457,7 +1508,7 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', parkzone:'畫停車區', stall:'加車位', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
   if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
@@ -1647,7 +1698,7 @@ function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const e
 function serialize() {
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones,
+    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -1657,7 +1708,7 @@ function serialize() {
 }
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
-  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.roadLines = d.roadLines || []; S.parkZones = d.parkZones || []; S.entrances = d.entrances || [];
+  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.roadLines = d.roadLines || []; S.parkZones = d.parkZones || []; S.manualCores = d.manualCores || []; S.entrances = d.entrances || [];
   S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
@@ -1933,7 +1984,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2253,7 +2304,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2292,7 +2343,7 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
@@ -2343,6 +2394,8 @@ $('#sUse').addEventListener('change', () => {
 $('#sDockType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sSubType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sParkAngle').value; if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
+['#eNW', '#eNE', '#eSW', '#eSE', '#ePad', '#eCutC', '#eFillC', '#eHaulC'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', computeEarthwork); });
+if ($('#ePadBal')) $('#ePadBal').onclick = () => { computeEarthwork(); $('#ePad').value = (S._ewBalance || 0).toFixed(1); computeEarthwork(); toast('整平高設為挖填平衡點（免外運）'); };
 $('#sParkType').addEventListener('change', () => {
   const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
@@ -3056,6 +3109,7 @@ function buildObjTree() {
   if (S.buildings.length) row(2, '🏗️', '量體', S.buildings.length, () => setTool('building'), 'building');
   row(2, '🌳', '景觀樹 Trees', S.layers.trees.vis ? '顯示' : '隱藏', () => toggleLayer('trees', 'vis'), 'trees');
   row(2, '🚦', '動線體檢 Flow', S.layers.flow.vis ? '顯示' : '隱藏', () => toggleLayer('flow', 'vis'), 'flow');
+  if (S.mode === 'site') row(2, '⛰️', '挖填方 Cut/Fill', S.layers.earthwork.vis ? '顯示' : '隱藏', () => toggleLayer('earthwork', 'vis'), 'earthwork');
   body.innerHTML = rows.map((r, i) => `<div class="otrow lv${r.lv}" data-i="${i}"><span>${r.icon}</span><span>${esc(r.label)}</span><span class="oc">${esc(String(r.count))}</span>${layerCtl(r.layer)}</div>`).join('');
   body.querySelectorAll('.otrow').forEach(el => el.onclick = (e) => { if (e.target.closest('.otctl')) return; rows[+el.dataset.i].action(); });
   body.querySelectorAll('.ot-eye, .ot-lock').forEach(b => b.onclick = (e) => { e.stopPropagation(); toggleLayer(b.dataset.lk, b.dataset.lp); });
