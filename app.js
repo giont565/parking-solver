@@ -46,6 +46,7 @@ const S = {
     obstacle: { vis: true, lock: false },
     entrance: { vis: true, lock: false },
     trees:    { vis: true },
+    flow:     { vis: false },        // 動線體檢 congestion heat-map layer (off by default)
   },
 };
 
@@ -54,7 +55,7 @@ const COLORS = {
 };
 const LABELS = { standard:'標準 Standard', compact:'小型 Compact', ada:'♿ 無障礙 ADA', ev:'⚡ EV 充電', trailer:'拖車 Trailer', moto:'🏍️ 機車 Motorcycle' };
 // object-tree eye/lock capabilities per category (site can't be hidden, trees can't be locked)
-const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1} };
+const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1}, flow:{vis:1} };
 // beds / baths per unit type (for DU/AC · Beds · Baths tabulation)
 const BEDS = { studio:0, '1br':1, '2br':2, '3br':3 }, BATHS = { studio:1, '1br':1, '2br':2, '3br':2 };
 // a category is interactive only when visible AND unlocked
@@ -771,14 +772,14 @@ function computeFlow() {
   return { cells, max, bottlenecks, deadends, cell: CELL };
 }
 function drawFlowOverlay() {
-  if (!S.showFlow || S.is3d || S.mapMode) return;
+  if (!S.layers.flow.vis || S.is3d || S.mapMode) return;
   const f = S._flowCache || (S._flowCache = computeFlow());
   if (!f.cells.length) return;
   const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), px = Math.max(2, Math.hypot(b.x - a.x, b.y - a.y) * f.cell);
   ctx.save(); pathPoly(S.boundary, true); ctx.clip();
-  for (const c of f.cells) {
-    const s = toScreen(c);
-    ctx.fillStyle = c.t > 0.66 ? `rgba(239,68,68,${(0.4 + 0.5 * c.t).toFixed(2)})` : c.t > 0.33 ? 'rgba(245,158,11,.55)' : 'rgba(34,197,94,.42)';
+  for (const c of f.cells) {                                   // single-hue RED that fades in by traffic: faint = quiet, deep red = congested
+    const s = toScreen(c), t = c.t;
+    ctx.fillStyle = `rgba(${(244 - 64 * t) | 0},${(63 - 48 * t) | 0},${(63 - 43 * t) | 0},${(0.06 + 0.62 * t).toFixed(2)})`;
     ctx.fillRect(s.x - px / 2, s.y - px / 2, px + 1, px + 1);
   }
   ctx.restore();
@@ -2444,14 +2445,7 @@ $('#btnTwLayers').onclick = () => {
 document.querySelectorAll('#twPanel input[name=twbase]').forEach(r => r.addEventListener('change', () => setBase(r.value)));
 document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventListener('change', () => setOverlay(c.dataset.ov, c.checked)));
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
-$('#btnFlow').onclick = () => {
-  S.showFlow = !S.showFlow; S._flowCache = null;
-  $('#btnFlow').classList.toggle('active', S.showFlow);
-  if (S.showFlow && S.is3d) { S.is3d = false; document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('active', b.dataset.view === '2d')); }
-  draw();
-  if (S.showFlow) { const f = S._flowCache || (S._flowCache = computeFlow());
-    toast(f.cells.length ? `動線體檢：${f.bottlenecks} 個瓶頸卡點、${f.deadends} 個死巷端 — 紅=車流最塞、綠=順` : '請先排一次車位再體檢'); }
-};
+$('#btnFlow').onclick = () => toggleLayer('flow', 'vis');   // 動線體檢 is a toggleable layer (also in the object tree)
 $('#btnCloud').onclick = openCloudModal;
 $('#panelToggle').onclick = () => { const open = $('#panel').classList.toggle('open'); $('#panelToggle').innerHTML = open ? '✕ 收起面板' : '⚙ 參數'; };
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
@@ -3030,6 +3024,11 @@ function toggleLayer(key, prop) {
   if (!S.layers[key]) return;
   S.layers[key][prop] = !S.layers[key][prop];
   if (key === 'trees' && prop === 'vis') { $('#btnTrees').classList.toggle('on', S.layers.trees.vis); document.querySelectorAll('#treesSeg button').forEach(b => b.classList.toggle('active', (b.dataset.tr === '1') === S.layers.trees.vis)); }
+  if (key === 'flow' && prop === 'vis') {
+    if (S.layers.flow.vis && S.is3d) { S.is3d = false; document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('active', b.dataset.view === '2d')); }
+    $('#btnFlow').classList.toggle('active', S.layers.flow.vis);
+    if (S.layers.flow.vis) { const f = S._flowCache || (S._flowCache = computeFlow()); toast(f.cells.length ? `動線體檢：${f.bottlenecks} 個瓶頸卡點、${f.deadends} 個死巷端 — 越紅越塞` : '請先排一次車位再體檢'); }
+  }
   if (S.selEntrance && !pickable('entrance')) S.selEntrance = null;   // drop selection if it just got hidden/locked
   if (S.selStall && !pickable('parking')) S.selStall = null;
   draw(); buildObjTree();
@@ -3056,6 +3055,7 @@ function buildObjTree() {
   if (S.obstacles.length) row(2, '⛔', '障礙/排除', S.obstacles.length, () => setTool('obstacle'), 'obstacle');
   if (S.buildings.length) row(2, '🏗️', '量體', S.buildings.length, () => setTool('building'), 'building');
   row(2, '🌳', '景觀樹 Trees', S.layers.trees.vis ? '顯示' : '隱藏', () => toggleLayer('trees', 'vis'), 'trees');
+  row(2, '🚦', '動線體檢 Flow', S.layers.flow.vis ? '顯示' : '隱藏', () => toggleLayer('flow', 'vis'), 'flow');
   body.innerHTML = rows.map((r, i) => `<div class="otrow lv${r.lv}" data-i="${i}"><span>${r.icon}</span><span>${esc(r.label)}</span><span class="oc">${esc(String(r.count))}</span>${layerCtl(r.layer)}</div>`).join('');
   body.querySelectorAll('.otrow').forEach(el => el.onclick = (e) => { if (e.target.closest('.otctl')) return; rows[+el.dataset.i].action(); });
   body.querySelectorAll('.ot-eye, .ot-lock').forEach(b => b.onclick = (e) => { e.stopPropagation(); toggleLayer(b.dataset.lk, b.dataset.lp); });
