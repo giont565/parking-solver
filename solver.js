@@ -1424,7 +1424,11 @@ function solveSite(input) {
   const gfa = footArea * floors;
   const far = gfa / parcelArea;
   const coverage = (isTower ? towerPodiumArea : footArea) / parcelArea * 100;   // tower: the podium covers the ground, not the slender plate
-  const nrsf = (isWrap ? resiFootArea : footArea) * floors * p.efficiency;   // wrap: only the ring is rentable
+  // MIXED-USE: optional ground-floor retail under residential — floor 1 becomes leasable retail, floors 2+ stay residential.
+  const groundRetail = !!p.groundRetail && residential && p.useType !== 'singlefamily' && !isGarden && floors >= 2;
+  const resiFloors = groundRetail ? floors - 1 : floors;
+  const retailGLA = groundRetail ? footArea * 0.95 : 0;                       // ground-floor leasable area
+  const nrsf = (isWrap ? resiFootArea : footArea) * resiFloors * p.efficiency;   // wrap: only the ring is rentable; mixed-use: resi floors only
   const keys = hotel ? Math.floor(nrsf / 450) : 0;   // hotel room count (~450 sqft/key incl. corridor + lobby + back-of-house)
 
   // 4. units (residential) or none (commercial/industrial)
@@ -1443,10 +1447,11 @@ function solveSite(input) {
     unitsByType = mix.map(m => ({ type: m.type, count: Math.round(units * m.pct / sumPct), size: m.size }));
   }
 
-  // 5. parking required vs provided
-  let parkingRequired = residential
+  // 5. parking required vs provided (mixed-use adds the ground-floor retail demand at ~3 / 1000 SF)
+  let parkingRequired = (residential
     ? Math.ceil(units * p.parkingRatio)
-    : Math.ceil(gfa / 1000 * p.parkingRatio);
+    : Math.ceil(gfa / 1000 * p.parkingRatio))
+    + (groundRetail ? Math.ceil(retailGLA / 1000 * 3) : 0);
   let parkCapped = false;
   const structured = p.parkingType === 'structured' || isTower;        // towers always sit on a structured parking podium
   const deckType = structured || isWrap;                               // all stack multi-level parking decks
@@ -1557,6 +1562,8 @@ function solveSite(input) {
     compliance.push({ k: '零售規模 Retail', ok: true, info: true, val: `主力店+${retail.pads.length} pad 外帶店 · GLA ${Math.round(retail.gla).toLocaleString()} SF` });
   if (datacenter)
     compliance.push({ k: '機房規模 Data hall', ok: true, info: true, val: `資料機房 ${Math.round(gfa).toLocaleString()} SF · ${floors} 層 · 含機電中庭＋變電站` });
+  if (groundRetail)
+    compliance.push({ k: '複合用途 Mixed-use', ok: true, info: true, val: `底層零售 ${Math.round(retailGLA).toLocaleString()} SF ＋ 住宅 ${units} 戶（${resiFloors}F）` });
   compliance.push({ k: '迴轉/車道 Turning', ok: turn.ok, val: turn.val });
   if (coreInfo)
     compliance.push({ k: '核心 Cores', ok: true, info: true, val: `${coreInfo.stairs} 逃生梯 ＋ ${coreInfo.elevators} 電梯（自動配置）` });
@@ -1566,6 +1573,7 @@ function solveSite(input) {
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
     structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision,
     isWrap, wrapCore, industrial, garden, parkCapped, hotel, keys, retail, datacenter, cores, coreInfo, footVoids,
+    mixedUse: groundRetail ? { retailGLA, resiFloors } : null,
     tower: isTower ? { plate: footprint, podium: towerPodium, podiumLevels: levelsAbove } : null,
   };
 }

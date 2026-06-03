@@ -2183,6 +2183,7 @@ function readSiteParams() {
     parkingType: ($('#sParkType') ? $('#sParkType').value : 'surface'),
     dockType: ($('#sDockType') ? $('#sDockType').value : 'cross'),
     subType: ($('#sSubType') ? $('#sSubType').value : 'townhome'),
+    groundRetail: ($('#sGroundRetail') ? $('#sGroundRetail').checked : false),
     parkingLevelsAbove: ($('#sParkLevelsAbove') ? +$('#sParkLevelsAbove').value : 3),
     parkingLevelsBelow: ($('#sParkLevelsBelow') ? +$('#sParkLevelsBelow').value : 0),
     structEff: ($('#sStructEff') ? +$('#sStructEff').value : 95) || 95,
@@ -2357,6 +2358,8 @@ function loadDemo(d) {
   if (d.dock) $('#sDockType').value = d.dock;
   $('#rowSubType').style.display = d.use === 'singlefamily' ? '' : 'none';
   if (d.sub) $('#sSubType').value = d.sub;
+  $('#rowGroundRetail').style.display = ['multifamily', 'mixeduse', 'tower'].includes(d.use) ? '' : 'none';
+  if ($('#sGroundRetail')) $('#sGroundRetail').checked = !!d.retail0;
   $('#zFAR').value = d.far != null ? d.far : 2.25;            // per-demo zoning (low-rise types get lower FAR/coverage)
   $('#zCov').value = d.cov != null ? d.cov : 50;
   if (d.hgtFt) $('#zHeight').value = round2(U.L(d.hgtFt));    // tall types (tower) override the height limit (ft → display unit)
@@ -2389,8 +2392,10 @@ $('#sUse').addEventListener('change', () => {
   $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
   ['#rowDockType', '#dockTypeHint'].forEach(id => $(id).style.display = use === 'industrial' ? '' : 'none');  // warehouse-only control
   $('#rowSubType').style.display = use === 'singlefamily' ? '' : 'none';                                      // single-family lot-type control
+  $('#rowGroundRetail').style.display = ['multifamily', 'mixeduse', 'tower'].includes(use) ? '' : 'none';     // mixed-use only for stacked residential
   if (S.boundary.length >= 3) doSolveSite();
 });
+$('#sGroundRetail').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sDockType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sSubType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sParkAngle').value; if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
