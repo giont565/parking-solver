@@ -445,6 +445,7 @@ function draw() {
     hatch(o, '#ef4444', .35);
   }
   // landscape trees (over parking/buildings, under markers)
+  drawFlowOverlay();
   drawTrees();
   // entrances
   if (S.layers.entrance.vis) for (const e of S.entrances) drawEntrance(e);
@@ -732,6 +733,55 @@ function treePositions() {
     }
   }
   return out;
+}
+// CIRCULATION HEALTH: flood the drive network from the gates, route every stall's trip back to a gate, and
+// accumulate traffic per cell → a congestion heat-map (red = funnels/choke points, green = quiet aisles).
+// Bottlenecks = high-traffic cells with ≤2 drive neighbours (a narrow passage everything squeezes through).
+function computeFlow() {
+  const park = S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution;
+  if (!park || !park.stalls || !park.stalls.length || S.boundary.length < 3) return { cells: [], max: 1, bottlenecks: 0, deadends: 0 };
+  const drives = (park.aisles || []).map(a => a.poly).concat((park.connectors || []).map(c => c.poly || c));
+  if (!drives.length) return { cells: [], max: 1, bottlenecks: 0, deadends: 0 };
+  const inAny = (pt, ps) => ps.some(poly => PS.pointInPoly(pt, poly));
+  const bb = PS.bbox(S.boundary), CELL = 3.5, W = Math.ceil((bb.maxX - bb.minX) / CELL) + 2, Hh = Math.ceil((bb.maxY - bb.minY) / CELL) + 2;
+  const idx = (i, j) => j * W + i, ctr = (i, j) => ({ x: bb.minX + (i - .5) * CELL, y: bb.minY + (j - .5) * CELL });
+  const net = new Uint8Array(W * Hh);
+  for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) { const pt = ctr(i, j); if (PS.pointInPoly(pt, S.boundary) && inAny(pt, drives)) net[idx(i, j)] = 1; }
+  const parent = new Int32Array(W * Hh).fill(-1), dist = new Int32Array(W * Hh).fill(-1), q = [];
+  for (const e of (S.entrances || [])) {
+    let bi = Math.round((e.x - bb.minX) / CELL), bj = Math.round((e.y - bb.minY) / CELL), best = -1, bd = 1e9;
+    for (let dj = -30; dj <= 30; dj++) for (let di = -30; di <= 30; di++) { const i = bi + di, j = bj + dj; if (i < 0 || j < 0 || i >= W || j >= Hh) continue; const k = idx(i, j); if (net[k]) { const d = di * di + dj * dj; if (d < bd) { bd = d; best = k; } } }
+    if (best >= 0 && dist[best] < 0) { dist[best] = 0; parent[best] = best; q.push(best); }
+  }
+  for (let qi = 0; qi < q.length; qi++) { const k = q[qi], i = k % W, j = (k - i) / W; for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const ni = i + di, nj = j + dj; if (ni < 0 || nj < 0 || ni >= W || nj >= Hh) continue; const nk = idx(ni, nj); if (net[nk] && dist[nk] < 0) { dist[nk] = dist[k] + 1; parent[nk] = k; q.push(nk); } } }
+  const load = new Float32Array(W * Hh);
+  for (const s of park.stalls) {
+    let bi = Math.round((s.cx - bb.minX) / CELL), bj = Math.round((s.cy - bb.minY) / CELL), best = -1, bd = 1e9;
+    for (let dj = -3; dj <= 3; dj++) for (let di = -3; di <= 3; di++) { const i = bi + di, j = bj + dj; if (i < 0 || j < 0 || i >= W || j >= Hh) continue; const k = idx(i, j); if (net[k] && dist[k] >= 0) { const d = di * di + dj * dj; if (d < bd) { bd = d; best = k; } } }
+    if (best < 0) continue; let k = best, g = 0; while (k >= 0 && parent[k] !== k && g++ < W * Hh) { load[k]++; k = parent[k]; } if (k >= 0) load[k]++;
+  }
+  let max = 1; for (let k = 0; k < W * Hh; k++) if (load[k] > max) max = load[k];
+  const cells = []; let bottlenecks = 0, deadends = 0;
+  for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) { const k = idx(i, j); if (!net[k] || load[k] <= 0) continue;
+    let deg = 0; for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const ni = i + di, nj = j + dj; if (ni >= 0 && nj >= 0 && ni < W && nj < Hh && net[idx(ni, nj)]) deg++; }
+    const t = load[k] / max; cells.push({ x: ctr(i, j).x, y: ctr(i, j).y, t });
+    if (t > 0.6 && deg <= 2) bottlenecks++;
+    if (deg <= 1 && dist[k] > 4) deadends++;
+  }
+  return { cells, max, bottlenecks, deadends, cell: CELL };
+}
+function drawFlowOverlay() {
+  if (!S.showFlow || S.is3d || S.mapMode) return;
+  const f = S._flowCache || (S._flowCache = computeFlow());
+  if (!f.cells.length) return;
+  const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), px = Math.max(2, Math.hypot(b.x - a.x, b.y - a.y) * f.cell);
+  ctx.save(); pathPoly(S.boundary, true); ctx.clip();
+  for (const c of f.cells) {
+    const s = toScreen(c);
+    ctx.fillStyle = c.t > 0.66 ? `rgba(239,68,68,${(0.4 + 0.5 * c.t).toFixed(2)})` : c.t > 0.33 ? 'rgba(245,158,11,.55)' : 'rgba(34,197,94,.42)';
+    ctx.fillRect(s.x - px / 2, s.y - px / 2, px + 1, px + 1);
+  }
+  ctx.restore();
 }
 function drawTrees() {
   if (!S.layers.trees.vis || S.is3d || S.boundary.length < 3) return;
@@ -1621,6 +1671,7 @@ function deserialize(d) {
 // Snapshot the editable state on each structural change; ⌘Z / ⌘⇧Z step through.
 function commit() {
   if (S._restoring) return;
+  S._flowCache = null;                          // layout changed → recompute the circulation heat-map lazily
   const snap = JSON.parse(JSON.stringify(serialize()));
   if (S.hIdx >= 0 && JSON.stringify(S.history[S.hIdx]) === JSON.stringify(snap)) return;   // skip no-op duplicates
   S.history = S.history.slice(0, S.hIdx + 1);
@@ -2393,6 +2444,14 @@ $('#btnTwLayers').onclick = () => {
 document.querySelectorAll('#twPanel input[name=twbase]').forEach(r => r.addEventListener('change', () => setBase(r.value)));
 document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventListener('change', () => setOverlay(c.dataset.ov, c.checked)));
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
+$('#btnFlow').onclick = () => {
+  S.showFlow = !S.showFlow; S._flowCache = null;
+  $('#btnFlow').classList.toggle('active', S.showFlow);
+  if (S.showFlow && S.is3d) { S.is3d = false; document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('active', b.dataset.view === '2d')); }
+  draw();
+  if (S.showFlow) { const f = S._flowCache || (S._flowCache = computeFlow());
+    toast(f.cells.length ? `動線體檢：${f.bottlenecks} 個瓶頸卡點、${f.deadends} 個死巷端 — 紅=車流最塞、綠=順` : '請先排一次車位再體檢'); }
+};
 $('#btnCloud').onclick = openCloudModal;
 $('#panelToggle').onclick = () => { const open = $('#panel').classList.toggle('open'); $('#panelToggle').innerHTML = open ? '✕ 收起面板' : '⚙ 參數'; };
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
