@@ -15,6 +15,7 @@ const S = {
   obstacles: [],           // [poly]
   roads: [],               // [poly] user-drawn internal roads (block buildings + parking, TestFit-style)
   roadWidth: 24,           // ft, internal road width
+  parkZones: [],           // [poly] free-shape parking areas — when set, stalls pack ONLY inside these
   entrances: [],           // [{x,y}]
   solution: null,          // result from PS.solve
   tool: 'select',
@@ -425,6 +426,12 @@ function draw() {
     }
     hatch(fp, shade(col, 0.4), .2);
     labelPoly(fp, 'BUILDING', '#e2e8f0');
+  }
+  // parking zones (user-drawn) — stalls pack only inside; show as a dashed outline so the stalls read through
+  for (const z of (S.parkZones || [])) {
+    pathPoly(z, true);
+    ctx.save(); ctx.setLineDash([8, 5]); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(34,197,94,.85)'; ctx.stroke(); ctx.restore();
+    ctx.fillStyle = 'rgba(34,197,94,.06)'; ctx.fill();
   }
   // internal roads (user-drawn) — asphalt strips the buildings + parking flow around
   for (const r of (S.roads || [])) {
@@ -1132,7 +1139,7 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) return;  // right handled on contextmenu
 
-  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road') {
+  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'parkzone') {
     if (!S.draft) { S.draft = []; S.draftKind = S.tool; }
     // closed shapes snap to the first point to close; a road is an open polyline (double-click / Enter to finish)
     if (S.tool !== 'road' && S.draft.length >= 3) {
@@ -1156,6 +1163,20 @@ cv.addEventListener('pointerdown', e => {
     const sp = snap(w);
     if (!S.splitPt) { S.splitPt = sp; toast('再點第二點，畫一條橫跨基地的切割線'); draw(); }
     else { const a = S.splitPt; S.splitPt = null; splitParcel(a, sp); }
+    return;
+  }
+
+  if (S.tool === 'stall') {               // manually drop one parking stall at the click (override the auto layout)
+    const sol = S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution;
+    if (!sol || !sol.stalls) { toast('請先按「自動排車位」排一次'); return; }
+    const th = (sol.theta != null ? sol.theta : 0), W = U.Lr(+$('#pW').value || 9), D = U.Lr(+$('#pD').value || 18);
+    const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+    const corner = (sr, sd) => ({ x: w.x + run.x * sr + pd.x * sd, y: w.y + run.y * sr + pd.y * sd });
+    sol.stalls.push({ poly: [corner(-W / 2, -D / 2), corner(W / 2, -D / 2), corner(W / 2, D / 2), corner(-W / 2, D / 2)], cx: w.x, cy: w.y, type: 'standard', manual: true });
+    sol.count = sol.stalls.length;
+    updateMetrics(); if (S.mode === 'site') updateSiteMetrics();
+    draw(); commit();
+    toast('已加一個車位（選取工具點它再按 Delete 可刪）');
     return;
   }
 
@@ -1203,7 +1224,7 @@ cv.addEventListener('pointerdown', e => {
 
 cv.addEventListener('pointermove', e => {
   const w = evtWorld(e);
-  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
+  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'parkzone', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
   if ((S.tool === 'subdivide' && S.splitPt) || (S.tool === 'measure' && S.measureStart)) draw();
   $('#stCoord').textContent = `${w.x.toFixed(1)} , ${w.y.toFixed(1)} ft`;
 
@@ -1328,13 +1349,17 @@ function finishDraft() {
     S.roads.push(...bufferPolyline(poly, S.roadWidth || 24));   // centreline → road strips; buildings + parking flow around
     msg = '已新增社區道路，格局自動繞開';
   }
+  else if (S.draftKind === 'parkzone') {
+    S.parkZones.push(poly);                                     // stalls now pack ONLY inside the drawn zones
+    msg = '已新增停車區，車位只排在框內';
+  }
   S.draft = null; S.draftKind = null;
   updateMetrics();
   if (S.mapMode) draw(); else fitView();
   // if this triggers a re-solve, let doSolve/doSolveSite commit the FINAL state (one clean undo step);
   // committing here too would record a stale intermediate (shape added, stalls not yet recomputed).
-  const reSolving = (kind === 'obstacle' || kind === 'building' || kind === 'road') && (S.mode === 'site' ? !!S.site : !!S.solution);
-  if (kind === 'obstacle' || kind === 'building' || kind === 'road') resolveActive();   // re-pack so stalls clear under the new shape
+  const reSolving = (kind === 'obstacle' || kind === 'building' || kind === 'road' || kind === 'parkzone') && (S.mode === 'site' ? !!S.site : !!S.solution);
+  if (kind === 'obstacle' || kind === 'building' || kind === 'road' || kind === 'parkzone') resolveActive();   // re-pack so stalls clear under the new shape
   if (!reSolving) commit();
   toast(msg);
 }
@@ -1356,7 +1381,7 @@ window.addEventListener('keydown', e => {
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', z:'parkzone', k:'stall', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -1365,10 +1390,10 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', parkzone:'畫停車區', stall:'加車位', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
-  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road') { S.draft = null; }
+  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
   draw();
@@ -1404,7 +1429,7 @@ function doSolve() {
   setTimeout(() => {
     const t0 = performance.now();
     const res = PS.solve({
-      boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances,
+      boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances,
       params: S.params, opts: S.opts,
     });
     S.solution = res; S.selStall = null;
@@ -1554,7 +1579,7 @@ function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const e
 function serialize() {
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads,
+    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones,
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -1564,7 +1589,7 @@ function serialize() {
 }
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
-  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.entrances = d.entrances || [];
+  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.parkZones = d.parkZones || []; S.entrances = d.entrances || [];
   S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
@@ -1839,7 +1864,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2034,7 +2059,7 @@ function readSiteParams() {
     maxFAR: +$('#zFAR').value, maxHeight: U.Lr(+$('#zHeight').value),
     maxCoverage: +$('#zCov').value, maxDUA: +$('#zDUA').value,
     setbacks: { front: U.Lr(+$('#zSbF').value), side: U.Lr(+$('#zSbS').value), rear: U.Lr(+$('#zSbR').value) },
-    parkingRatio: +$('#zPark').value, parkAngle: S.siteParkAngle || 90, parkSetback: 5, evPct: 0,
+    parkingRatio: +$('#zPark').value, parkAngle: ($('#sParkAngle') ? +$('#sParkAngle').value : (S.siteParkAngle || 90)), parkSetback: 5, evPct: 0,
     parkingType: ($('#sParkType') ? $('#sParkType').value : 'surface'),
     dockType: ($('#sDockType') ? $('#sDockType').value : 'cross'),
     subType: ($('#sSubType') ? $('#sSubType').value : 'townhome'),
@@ -2159,7 +2184,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.roads = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2198,7 +2223,7 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.roads = []; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
@@ -2248,6 +2273,7 @@ $('#sUse').addEventListener('change', () => {
 });
 $('#sDockType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sSubType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
+$('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sParkAngle').value; if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sParkType').addEventListener('change', () => {
   const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
@@ -2493,7 +2519,7 @@ function generateOptions() {
     } else {
       const seen = new Set();
       for (const o of ['auto', '0', '90', 'edge']) for (const a of [90, 60, 45]) {
-        const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances, params: { ...S.params, orient: o, angle: a }, opts: S.opts });
+        const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances, params: { ...S.params, orient: o, angle: a }, opts: S.opts });
         if (!sol) continue;
         const key = sol.count + '_' + a; if (seen.has(key)) continue; seen.add(key);
         out.push({
@@ -2783,7 +2809,7 @@ function autoOptimize() {
     const aisleFor = (a, ow) => AISLE_BY_ANGLE[a][ow ? 'one' : 'two'] * regionScale;
     let best = null;
     for (const o of ['auto', '0', '90', 'edge']) for (const a of [90, 60, 45]) for (const ow of [false, true]) {
-      const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances,
+      const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances,
         params: { ...S.params, orient: o, angle: a, aisle: aisleFor(a, ow), oneway: ow }, opts: S.opts });
       if (!sol) continue;
       // if a target is set: among configs that MEET it pick the cleanest (two-way/90°);

@@ -954,6 +954,14 @@ function solve(input) {
     best.count = best.stalls.length;
   }
 
+  // PARKING ZONES: if the user drew explicit parking areas, keep only the stalls whose centre falls inside one
+  // (free-shape surface parking — park HERE, not the whole site). No zones drawn → pack the whole lot as before.
+  if (input.parkZones && input.parkZones.length) {
+    best.stalls = best.stalls.filter(s => input.parkZones.some(z => pointInPoly({ x: s.cx, y: s.cy }, z)));
+    best.aisles = (best.aisles || []).filter(a => input.parkZones.some(z => polyOverlap(a.poly, z)));   // drop the empty aisles outside the zone
+    best.count = best.stalls.length;
+  }
+
   // focus point for ADA = nearest building centroid, else site centroid
   let focus = ctx.center;
   if (input.buildings && input.buildings.length) focus = centroid(input.buildings[0]);
