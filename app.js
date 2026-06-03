@@ -13,7 +13,8 @@ const S = {
   boundary: [],            // [{x,y}] in feet, single polygon
   buildings: [],           // [poly]
   obstacles: [],           // [poly]
-  roads: [],               // [poly] user-drawn internal roads (block buildings + parking, TestFit-style)
+  roads: [],               // [poly] road strips fed to the solver (block buildings / clear stalls)
+  roadLines: [],           // [{line:[pts], width}] road centre-lines — rendered as smooth continuous roads
   roadWidth: 24,           // ft, internal road width
   parkZones: [],           // [poly] free-shape parking areas — when set, stalls pack ONLY inside these
   entrances: [],           // [{x,y}]
@@ -433,15 +434,9 @@ function draw() {
     ctx.save(); ctx.setLineDash([8, 5]); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(34,197,94,.85)'; ctx.stroke(); ctx.restore();
     ctx.fillStyle = 'rgba(34,197,94,.06)'; ctx.fill();
   }
-  // internal roads (user-drawn) — asphalt strips the buildings + parking flow around
-  for (const r of (S.roads || [])) {
-    pathPoly(r, true);
-    ctx.fillStyle = 'rgba(51,61,79,.82)'; ctx.fill();
-    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(148,163,184,.6)'; ctx.stroke();
-    const m0 = toScreen({ x: (r[0].x + r[3].x) / 2, y: (r[0].y + r[3].y) / 2 }), m1 = toScreen({ x: (r[1].x + r[2].x) / 2, y: (r[1].y + r[2].y) / 2 });
-    ctx.save(); ctx.setLineDash([9, 8]); ctx.strokeStyle = 'rgba(250,204,21,.8)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(m0.x, m0.y); ctx.lineTo(m1.x, m1.y); ctx.stroke(); ctx.restore();
-  }
+  // internal roads (user-drawn) — drawn as a STROKED centre-line with round joins/caps so bends are smooth
+  // and continuous (curb edge under + asphalt + dashed centre stripe). Looks like a real road, not box segments.
+  drawRoads();
   // obstacles
   for (const o of (S.layers.obstacle.vis ? S.obstacles : [])) {
     pathPoly(o, true);
@@ -499,6 +494,20 @@ function bufferPolyline(pts, width) {
     rects.push([{ x: a.x - ex + nx, y: a.y - ey + ny }, { x: b.x + ex + nx, y: b.y + ey + ny }, { x: b.x + ex - nx, y: b.y + ey - ny }, { x: a.x - ex - nx, y: a.y - ey - ny }]);
   }
   return rects;
+}
+// draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,
+// asphalt body, dashed yellow centre stripe). Round joins make bends real instead of blocky box segments.
+function drawRoads() {
+  const lines = S.roadLines || [];
+  const trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
+  if (!lines.length) { for (const r of (S.roads || [])) { pathPoly(r, true); ctx.fillStyle = 'rgba(71,85,105,.9)'; ctx.fill(); } return; }  // legacy saves: flat strips
+  const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);   // px per foot (map-safe)
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const rd of lines) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = w + 5; ctx.strokeStyle = 'rgba(30,41,59,.95)'; ctx.stroke(); }   // curb
+  for (const rd of lines) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = Math.max(w, 2); ctx.strokeStyle = 'rgba(74,85,104,.96)'; ctx.stroke(); }  // asphalt
+  ctx.setLineDash([14, 11]);
+  for (const rd of lines) { trace(rd.line); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(250,204,21,.92)'; ctx.stroke(); }   // centre stripe
+  ctx.restore();
 }
 // fill a building footprint with facility/road VOIDS punched out (even-odd), so it wraps around them
 function fillVoids(outer, voids, fill, stroke, lw) {
@@ -620,6 +629,11 @@ function drawDraft() {
   const pts = S.draft.slice();
   if (S.hoverWorld) pts.push(S.hoverWorld);
   ctx.save();
+  if (S.draftKind === 'road' && pts.length >= 2) {            // preview the road at its real width while drawing
+    const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = (S.roadWidth || 24) * sc; ctx.strokeStyle = 'rgba(74,85,104,.55)';
+    ctx.beginPath(); pts.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke();
+  }
   ctx.setLineDash([6, 4]); ctx.lineWidth = S.draftKind === 'road' ? 3 : 1.8;
   ctx.strokeStyle = S.draftKind === 'obstacle' ? '#ef4444' : S.draftKind === 'building' ? '#94a3b8' : S.draftKind === 'road' ? '#facc15' : '#38bdf8';
   pathPoly(pts, false); ctx.stroke();
@@ -1346,7 +1360,9 @@ function finishDraft() {
     if (S.boundary.length >= 3 && !PS.polyOverlap(poly, S.boundary)) msg = '⚠️ 障礙畫在基地範圍外，對排版無影響';
   }
   else if (S.draftKind === 'road') {
-    S.roads.push(...bufferPolyline(poly, S.roadWidth || 24));   // centreline → road strips; buildings + parking flow around
+    const wdt = S.roadWidth || 24;
+    S.roads.push(...bufferPolyline(poly, wdt));                  // strips for the solver (block buildings / clear stalls)
+    S.roadLines.push({ line: poly, width: wdt });               // centre-line for a smooth continuous render
     msg = '已新增社區道路，格局自動繞開';
   }
   else if (S.draftKind === 'parkzone') {
@@ -1579,7 +1595,7 @@ function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const e
 function serialize() {
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones,
+    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones,
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -1589,7 +1605,7 @@ function serialize() {
 }
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
-  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.parkZones = d.parkZones || []; S.entrances = d.entrances || [];
+  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.roadLines = d.roadLines || []; S.parkZones = d.parkZones || []; S.entrances = d.entrances || [];
   S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
@@ -1864,7 +1880,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2184,7 +2200,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2223,7 +2239,7 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.roads = []; S.parkZones = []; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
