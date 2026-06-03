@@ -276,6 +276,7 @@ function packAtAngle(theta, ctx) {
 /* --------------------------- orientation search -------------------------- */
 function candidateAngles(boundary, orient) {
   const deg2rad = d => d * Math.PI / 180;
+  if (typeof orient === 'number') return [orient];   // caller forces an exact aisle angle (e.g. garden bars)
   if (orient === '0')  return [0];
   if (orient === '90') return [Math.PI / 2];
   if (orient === 'edge') {
@@ -945,6 +946,14 @@ function solve(input) {
   const ents = access === 'single' ? (input.entrances || []).slice(0, 1) : (input.entrances || []);
   buildCirculation(best, boundary, ents, p.aisle, access === 'open', input.buildings || [], input.obstacles || []);
 
+  // USER ROADS are DRIVES, not no-go zones: the grid packs right up to both sides and stays reachable via
+  // its own aisles — we only clear the stalls that physically sit ON the road (cars don't park on the drive).
+  // So drawing a road re-flows parking around it instead of blanking a whole corridor.
+  if (input.roads && input.roads.length) {
+    best.stalls = best.stalls.filter(s => !input.roads.some(r => polyOverlap(s.poly, r)));
+    best.count = best.stalls.length;
+  }
+
   // focus point for ADA = nearest building centroid, else site centroid
   let focus = ctx.center;
   if (input.buildings && input.buildings.length) focus = centroid(input.buildings[0]);
@@ -1091,11 +1100,19 @@ function structuredDeck(footprint, p, entrances) {
 // TOWNHOME SUBDIVISION: lay rows of townhouse lots inside the buildable envelope, aligned to its
 // longest edge — double-loaded bands (access drive + two back-to-back rows). Returns the unit
 // rectangles (world coords) actually fitting inside the parcel. A real lot count, not a GFA estimate.
-function subdivisionLayout(envelope, p) {
-  if (!envelope || envelope.length < 3) return { units: [], drives: [], theta: 0, count: 0 };
-  const Wu = p.townhouseW || 20, Du = p.townhouseD || 40, drive = p.subDrive || 24;   // ft
+function subdivisionLayout(envelope, p, blockers) {
+  const block = blockers || [];
+  if (!envelope || envelope.length < 3) return { units: [], houses: [], drives: [], theta: 0, count: 0, subType: 'townhome' };
+  // LOT TYPES: townhome = attached (house fills the lot); detached/cottage = a smaller house inset in a wider lot.
+  const LOT = {
+    townhome: { Wu: 20, Du: 40, side: 0, front: 0, rear: 0 },
+    detached: { Wu: 52, Du: 92, side: 7, front: 18, rear: 25 },
+    cottage:  { Wu: 34, Du: 60, side: 5, front: 12, rear: 16 },   // small-lot / tiny homes / ADU
+  };
+  const L = LOT[p.subType] || LOT.townhome;
+  const Wu = p.townhouseW || L.Wu, Du = p.townhouseD || L.Du, drive = p.subDrive || 24;   // ft
   let th = 0, best = -1;
-  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const Le = Math.hypot(b.x - a.x, b.y - a.y); if (Le > best) { best = Le; th = Math.atan2(b.y - a.y, b.x - a.x); } }
   const c = centroid(envelope);
   const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
   const toLocal = pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y });
@@ -1103,19 +1120,220 @@ function subdivisionLayout(envelope, p) {
   const el = envelope.map(toLocal);
   const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
   const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
-  const units = [], drives = [], band = drive + 2 * Du;
+  const rect = (r0, q0, r1, q1) => [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
+  const units = [], houses = [], drives = [], band = drive + 2 * Du;
   for (let q0 = minQ; q0 + drive + Du <= maxQ + 1; q0 += band) {
     const dq0 = q0, dq1 = q0 + drive;                                  // the access drive of this band
-    if (dq1 <= maxQ) drives.push([toWorld(minR, dq0), toWorld(maxR, dq0), toWorld(maxR, dq1), toWorld(minR, dq1)]);
+    if (dq1 <= maxQ) drives.push(rect(minR, dq0, maxR, dq1));
     for (const rowQ of [q0 + drive, q0 + drive + Du]) {                // two back-to-back rows
       if (rowQ + Du > maxQ + 1) break;
       for (let r = minR; r + Wu <= maxR + 1; r += Wu) {
-        const rect = [toWorld(r, rowQ), toWorld(r + Wu, rowQ), toWorld(r + Wu, rowQ + Du), toWorld(r, rowQ + Du)];
-        if (rect.every(pt => pointInPoly(pt, envelope))) units.push(rect);
+        const lot = rect(r, rowQ, r + Wu, rowQ + Du);
+        if (!lot.every(pt => pointInPoly(pt, envelope)) || block.some(b => polyOverlap(lot, b))) continue;
+        units.push(lot);
+        houses.push(L.side || L.front || L.rear                       // detached/cottage: house inset within the lot
+          ? rect(r + L.side, rowQ + L.front, r + Wu - L.side, rowQ + Du - L.rear)
+          : lot);
       }
     }
   }
-  return { units, drives, theta: th, count: units.length, unitW: Wu, unitD: Du };
+  return { units, houses, drives, theta: th, count: units.length, unitW: Wu, unitD: Du, subType: p.subType || 'townhome' };
+}
+
+// INDUSTRIAL / LOGISTICS WAREHOUSE: a single-storey clear-span box with loading docks on one
+// (single-dock) or both (cross-dock) long faces, a paved truck court in front of each dock face,
+// and a row of 53' trailer stalls at the far side of each court. Aligned to the parcel's longest
+// edge. Returns REAL dock-door + trailer counts (not a GFA estimate). Staff cars are packed into the
+// leftover end-yards by solve() with the box + courts passed as no-go zones. Returns {ok:false} when
+// the parcel is too small for a real warehouse, so the caller falls back to generic massing.
+function industrialLayout(envelope, p, blockers) {
+  const block = blockers || [];
+  const dockType = p.dockType === 'single' ? 'single' : 'cross';
+  const empty = { warehouse: null, dockDoors: [], truckCourts: [], trailerStalls: [], dockType, dockCount: 0, trailerCount: 0, theta: 0, ok: false };
+  if (!envelope || envelope.length < 3) return empty;
+  // 1. orient to the longest edge (local r = along that edge, q = perpendicular)
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const Lr = maxR - minR, Dq = maxQ - minQ;
+  // 2. truck court depth = a 53' trailer row + a maneuvering apron, on the dock side(s)
+  const TRAILER_L = 53, TRAILER_W = 12, DOOR_SP = 12, DOOR_W = 9, DOOR_D = 4, MIN_BLDG_D = 100;
+  const nCourts = dockType === 'cross' ? 2 : 1;
+  let court = Math.max(p.truckCourt || 130, TRAILER_L + 40);
+  let bDepth = Dq - nCourts * court;
+  if (bDepth < MIN_BLDG_D) {                                  // shrink courts (to a floor) before giving up depth
+    court = Math.max(TRAILER_L + 24, (Dq - MIN_BLDG_D) / nCourts);
+    bDepth = Dq - nCourts * court;
+  }
+  if (bDepth < 60 || Lr < 170) return empty;                  // parcel too small → generic massing fallback
+  // 3. front car-parking yard: sized to the staff-parking demand (est. from a full-length box), capped.
+  //    Cross-dock has courts on BOTH long faces, so staff cars can only go in this front yard.
+  const ratio = p.parkingRatio || 0;
+  const reqStalls = Math.ceil((Lr - 30) * bDepth / 1000 * ratio);
+  let frontYard = Dq > 0 ? reqStalls * 430 / Dq : 0;         // ~430 sqft per 90° stall (incl. aisle + shallow-yard packing loss + access-drive overhead)
+  frontYard = Math.min(Math.max(frontYard, ratio > 0 ? 60 : 0), Lr * 0.45);
+  const bLen = Lr - frontYard - (frontYard > 0 ? 10 : 0);    // 10ft buffer between the lot and the box
+  if (bLen < 100) return empty;
+  const r0 = maxR - bLen, r1 = maxR;                          // box at the rear; front yard fills r < r0
+  // 4. building rectangle: centred in q (cross-dock) or backed to the high-q edge (single-dock)
+  let q0, q1;
+  if (dockType === 'cross') { q0 = minQ + court; q1 = maxQ - court; }
+  else { q1 = maxQ; q0 = q1 - bDepth; }
+  const warehouse = [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
+  // 5. per dock face: doors on the wall, the court apron in front, a trailer row at the far side
+  const faces = dockType === 'cross' ? [{ q: q0, dir: -1, edge: minQ }, { q: q1, dir: +1, edge: maxQ }]
+                                     : [{ q: q0, dir: -1, edge: minQ }];
+  const dockDoors = [], truckCourts = [], trailerStalls = [];
+  for (const f of faces) {
+    for (let r = r0 + DOOR_SP / 2; r + DOOR_W <= r1; r += DOOR_SP) {        // dock doors along the face
+      const qa = f.q, qb = f.q + f.dir * DOOR_D;
+      const dd = [toWorld(r, qa), toWorld(r + DOOR_W, qa), toWorld(r + DOOR_W, qb), toWorld(r, qb)];
+      if (!block.some(b => polyOverlap(dd, b))) dockDoors.push(dd);
+    }
+    truckCourts.push([toWorld(r0, f.q), toWorld(r1, f.q), toWorld(r1, f.edge), toWorld(r0, f.edge)]);  // paved apron
+    const tFar = f.edge, tInner = f.edge - f.dir * TRAILER_L;               // 53' trailer row against the parcel edge
+    for (let r = r0; r + TRAILER_W <= r1; r += TRAILER_W) {
+      const ts = [toWorld(r, tFar), toWorld(r + TRAILER_W, tFar), toWorld(r + TRAILER_W, tInner), toWorld(r, tInner)];
+      if (!block.some(b => polyOverlap(ts, b))) trailerStalls.push(ts);
+    }
+  }
+  return { warehouse, dockDoors, truckCourts, trailerStalls, dockType, dockCount: dockDoors.length, trailerCount: trailerStalls.length, theta: th, courtDepth: court, frontYard, clearHeight: p.floorHeight, ok: true };
+}
+
+// GARDEN / LOW-RISE WALK-UP: rows of double-loaded residential bar buildings with surface-parking drive
+// bands between them — the classic suburban garden-apartment massing (MANY buildings, not one blob). Returns
+// the real bar footprints (world coords); units are counted from total bar floor area back in solveSite. Cars
+// pack into the bands by solve() with the bars passed as buildings. Aligned to the parcel's longest edge.
+function gardenLayout(envelope, p, blockers) {
+  const block = blockers || [];
+  const empty = { bars: [], theta: 0, totalBarArea: 0, rows: 0, barDepth: 0, barLen: 0 };
+  if (!envelope || envelope.length < 3) return empty;
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const barDepth = Math.max(p.gardenBarDepth || 66, 40);   // double-loaded: ~30ft units both sides + 6ft corridor
+  const parkBand = 62, endMargin = 26, segGap = 26, maxSeg = 200;   // perimeter + cross breezeways = drive lanes the packer routes through
+  const r0 = minR + endMargin, r1 = maxR - endMargin, span = r1 - r0;
+  if (span < 90 || maxQ - minQ < barDepth + 20) return empty;
+  const bars = []; let totalBarArea = 0;
+  for (let q = minQ + 8; q + barDepth <= maxQ - 8 + 1e-6; q += barDepth + parkBand) {   // bar row, then a parking band
+    const nSeg = Math.max(1, Math.round(span / (maxSeg + segGap)));   // split long rows into separate buildings with breezeways
+    const segLen = (span - (nSeg - 1) * segGap) / nSeg;
+    if (segLen < 50) continue;
+    for (let k = 0; k < nSeg; k++) {
+      const sr0 = r0 + k * (segLen + segGap), sr1 = sr0 + segLen;
+      const bar = [toWorld(sr0, q), toWorld(sr1, q), toWorld(sr1, q + barDepth), toWorld(sr0, q + barDepth)];
+      if (bar.every(pt => pointInPoly(pt, envelope)) && !block.some(b => polyOverlap(bar, b))) { bars.push(bar); totalBarArea += segLen * barDepth; }
+    }
+  }
+  return { bars, theta: th, totalBarArea, rows: bars.length, barDepth, barLen: span };
+}
+
+// HOTEL: one double-loaded corridor slab (a single consolidated building, unlike garden's grid of bars),
+// backed to a long edge so a cohesive parking field sits in front. Returns the bar footprint + corridor depth;
+// room keys are counted from total floor area in solveSite. {ok:false} on a too-small parcel → generic massing.
+function hotelLayout(envelope, p) {
+  if (!envelope || envelope.length < 3) return { ok: false };
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const Lr = maxR - minR, Dq = maxQ - minQ;
+  const depth = Math.min(p.hotelBarDepth || 62, Dq * 0.55);   // double-loaded corridor; keep ≥45% depth for parking
+  const endMargin = Math.min(Math.max(Lr * 0.05, 20), 60);
+  const r0 = minR + endMargin, r1 = maxR - endMargin;
+  if (r1 - r0 < 100 || depth < 40) return { ok: false };
+  const q1 = maxQ, q0 = q1 - depth;                           // slab backed to the high-q edge; parking fills q < q0
+  const bar = [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
+  return { bar, theta: th, barDepth: depth, barLen: r1 - r0, ok: true };
+}
+
+// RETAIL CENTRE: an anchor / inline-shop strip backed to the rear edge, a row of pad outparcels (banks,
+// fast-food) near the street, and a large surface parking field between — the parking-dominated retail
+// typology. Returns the anchor + pad footprints; GLA is single-storey. Cars pack the field via solve().
+function retailLayout(envelope, p, blockers) {
+  const block = blockers || [];
+  if (!envelope || envelope.length < 3) return { ok: false };
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const Lr = maxR - minR, Dq = maxQ - minQ;
+  if (Lr < 150 || Dq < 160) return { ok: false };
+  const depth = Math.min(p.retailDepth || 120, Dq * 0.34);     // anchor + inline shops at the rear (shallow → big parking field for retail's high ratio)
+  const endMargin = Math.min(Math.max(Lr * 0.05, 20), 70);
+  const r0 = minR + endMargin, r1 = maxR - endMargin;
+  const aq1 = maxQ, aq0 = aq1 - depth;                          // anchor backed to the high-q (rear) edge
+  const anchor = [toWorld(r0, aq0), toWorld(r1, aq0), toWorld(r1, aq1), toWorld(r0, aq1)];
+  // pad outparcels: a row of small boxes near the street (low-q), evenly spaced along the frontage
+  const pads = [], padW = 74, padD = 64, padQ0 = minQ + 8, padQ1 = padQ0 + padD;
+  const nPads = Math.max(2, Math.min(4, Math.floor(Lr / 230)));
+  const gap = (r1 - r0 - nPads * padW) / (nPads + 1);
+  if (gap > 30 && padQ1 < aq0 - 80) {                          // only if pads + a real parking field fit
+    for (let k = 0; k < nPads; k++) {
+      const pr0 = r0 + gap + k * (padW + gap), pr1 = pr0 + padW;
+      const pad = [toWorld(pr0, padQ0), toWorld(pr1, padQ0), toWorld(pr1, padQ1), toWorld(pr0, padQ1)];
+      if (pad.every(pt => pointInPoly(pt, envelope)) && !block.some(b => polyOverlap(pad, b))) pads.push(pad);
+    }
+  }
+  return { anchor, pads, theta: th, gla: polyArea(anchor) + pads.reduce((s, p) => s + polyArea(p), 0), ok: true };
+}
+
+// DATA CENTRE: a large data-hall box backed to the rear, a fenced mechanical/generator yard apron in front
+// of it (chillers + gensets), a substation pad at a front corner, and a small staff lot. Multi-level halls
+// allowed. Returns the hall + equipment yards; the yards are no-go zones the staff lot packs around.
+function datacenterLayout(envelope, p) {
+  if (!envelope || envelope.length < 3) return { ok: false };
+  let th = 0, best = -1;
+  for (let i = 0; i < envelope.length; i++) { const a = envelope[i], b = envelope[(i + 1) % envelope.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(envelope);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = envelope.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(p => p.r)), maxR = Math.max(...el.map(p => p.r));
+  const minQ = Math.min(...el.map(p => p.q)), maxQ = Math.max(...el.map(p => p.q));
+  const Lr = maxR - minR, Dq = maxQ - minQ;
+  if (Lr < 160 || Dq < 200) return { ok: false };
+  const mechD = 56;                                            // mechanical/generator yard depth in front of the hall
+  const hallD = Math.min(Dq * 0.5, Dq - mechD - 90);           // data-hall depth (rear); keep room for yard + a staff lot
+  if (hallD < 90) return { ok: false };
+  const endMargin = Math.min(Math.max(Lr * 0.05, 24), 80);
+  const r0 = minR + endMargin, r1 = maxR - endMargin;
+  const hq1 = maxQ, hq0 = hq1 - hallD;                         // hall backed to the high-q (rear) edge
+  const hall = [toWorld(r0, hq0), toWorld(r1, hq0), toWorld(r1, hq1), toWorld(r0, hq1)];
+  const my0 = hq0 - mechD, my1 = hq0;                          // mechanical yard apron in front of the hall
+  const mechYard = [toWorld(r0, my0), toWorld(r1, my0), toWorld(r1, my1), toWorld(r0, my1)];
+  const subW = 70, subStation = [toWorld(r0, my0 - 56), toWorld(r0 + subW, my0 - 56), toWorld(r0 + subW, my0 - 6), toWorld(r0, my0 - 6)];  // substation pad at a front corner
+  const yards = [mechYard, subStation];
+  return { hall, mechYard, subStation, yards, theta: th, hallDepth: hallD, ok: true };
+}
+
+// TOWER: a compact point-tower floorplate centred on the podium base (the coverage-capped footprint).
+// The residential mass uses this small plate and rises many storeys; structured parking fills the wider
+// podium below it. Returns the plate (≤ ~13k sqft, the high-rise floorplate) inset within the podium.
+function towerPlate(podium, p) {
+  const a = polyArea(podium);
+  if (a < 1) return podium.slice();
+  const target = Math.min(a * 0.55, p.towerPlate || 13000);   // point-tower floorplate
+  return polyScaleAbout(podium, Math.min(Math.sqrt(target / a), 0.92), centroid(podium));
 }
 
 function solveSite(input) {
@@ -1123,7 +1341,13 @@ function solveSite(input) {
   if (!boundary || boundary.length < 3) return null;
   const parcelArea = polyArea(boundary);
   const acres = parcelArea / 43560;
-  const residential = p.useType === 'multifamily' || p.useType === 'mixeduse' || p.useType === 'singlefamily';
+  const residential = p.useType === 'multifamily' || p.useType === 'mixeduse' || p.useType === 'singlefamily' || p.useType === 'garden' || p.useType === 'tower';
+  const isIndustrial = p.useType === 'industrial';
+  const isGarden = p.useType === 'garden';
+  const isHotel = p.useType === 'hotel';
+  const isTower = p.useType === 'tower';
+  const isRetail = p.useType === 'retail';
+  const isData = p.useType === 'datacenter';
 
   // 1. buildable envelope (parcel minus setbacks)
   const baseClass = makeSetbackClassifier(boundary, input.entrances, p.setbacks);
@@ -1132,12 +1356,44 @@ function solveSite(input) {
   let envelope = buildableEnvelope(boundary, setbackOf);
   if (envelope.length < 3) envelope = boundary.slice();
 
-  // 2. footprint capped by max coverage
+  // BLOCKERS = user-drawn facilities (obstacles) + internal roads. Buildings AND parking flow around them,
+  // so drawing a pond / easement / road re-solves the whole site (TestFit-style responsive layout).
+  const blockers = (input.obstacles || []).concat(input.roads || []);
+
+  // INDUSTRIAL warehouse / GARDEN low-rise bars: real multi-element generators; null = parcel too small → generic massing
+  let industrial = null;
+  if (isIndustrial) { const ind = industrialLayout(envelope, p, blockers); if (ind.ok) industrial = ind; }
+  let garden = null;
+  if (isGarden) { const g = gardenLayout(envelope, p, blockers); if (g.rows > 0) garden = g; }
+  let hotel = null;
+  if (isHotel) { const h = hotelLayout(envelope, p); if (h.ok) hotel = h; }
+  let retail = null;
+  if (isRetail) { const r = retailLayout(envelope, p, blockers); if (r.ok) retail = r; }
+  let datacenter = null;
+  if (isData) { const d = datacenterLayout(envelope, p); if (d.ok) datacenter = d; }
+
+  // 2. footprint = the warehouse box (industrial) / hotel slab / retail anchor / data hall, else envelope capped by coverage
   const envArea = polyArea(envelope);
   const maxCovArea = parcelArea * (p.maxCoverage / 100);
   let footprint = envelope;
-  if (envArea > maxCovArea && envArea > 0) footprint = polyScaleAbout(envelope, Math.sqrt(maxCovArea / envArea));
-  const footArea = polyArea(footprint);
+  if (industrial) footprint = industrial.warehouse;
+  else if (hotel) footprint = hotel.bar;
+  else if (retail) footprint = retail.anchor;
+  else if (datacenter) footprint = datacenter.hall;
+  else if (envArea > maxCovArea && envArea > 0) footprint = polyScaleAbout(envelope, Math.sqrt(maxCovArea / envArea));
+  let footArea = polyArea(footprint);
+  if (garden) footArea = garden.totalBarArea;   // garden coverage / FAR / units reflect the actual bars, not the envelope blob
+  if (retail) footArea = retail.gla;            // retail GLA = anchor + pad outparcels (single storey)
+  // TOWER: the wide coverage-capped footprint becomes the parking PODIUM; the residential mass is a slender plate on top.
+  let towerPodium = null, towerPodiumArea = 0;
+  if (isTower) {
+    towerPodium = footprint; towerPodiumArea = polyArea(towerPodium);
+    footprint = towerPlate(towerPodium, p); footArea = polyArea(footprint);
+  }
+  // FACILITIES / ROADS: punch any blocker overlapping the building footprint as a void — the building wraps
+  // around it. (Garden bars & single-family lots are discrete, so they skip blocked pieces inside their own layout.)
+  const footVoids = (isGarden || p.useType === 'singlefamily') ? [] : blockers.filter(b => polyOverlap(b, footprint));
+  if (footVoids.length) footArea = Math.max(footArea - footVoids.reduce((s, v) => s + polyArea(v), 0), Math.max(footArea * 0.15, 200));
   // WRAP type: residential wraps a structured parking CORE (an inner inset of the footprint).
   // Rentable area is the RING (footprint − core); the core is the garage.
   const isWrap = p.parkingType === 'wrap';
@@ -1145,24 +1401,25 @@ function solveSite(input) {
   const coreArea = wrapCore ? polyArea(wrapCore) : 0;
   const resiFootArea = Math.max(footArea - coreArea, 1);
 
-  // 3. floors — limited by height AND by FAR
+  // 3. floors — limited by height AND by FAR (industrial warehouse is single-storey clear-span)
   const floorsByHeight = Math.max(1, Math.floor(p.maxHeight / p.floorHeight));
   const floorsByFAR = Math.max(1, Math.floor((p.maxFAR * parcelArea) / Math.max(footArea, 1)));
-  const floors = Math.max(1, Math.min(floorsByHeight, floorsByFAR));
+  const floors = (industrial || retail) ? 1 : Math.max(1, Math.min(floorsByHeight, floorsByFAR, garden ? 2 : Infinity));  // industrial & retail are single-storey; garden walk-ups cap at 2
   const height = floors * p.floorHeight;
   const gfa = footArea * floors;
   const far = gfa / parcelArea;
-  const coverage = footArea / parcelArea * 100;
+  const coverage = (isTower ? towerPodiumArea : footArea) / parcelArea * 100;   // tower: the podium covers the ground, not the slender plate
   const nrsf = (isWrap ? resiFootArea : footArea) * floors * p.efficiency;   // wrap: only the ring is rentable
+  const keys = hotel ? Math.floor(nrsf / 450) : 0;   // hotel room count (~450 sqft/key incl. corridor + lobby + back-of-house)
 
   // 4. units (residential) or none (commercial/industrial)
   let units = 0, unitsByType = [], densityCapped = false, subdivision = null;
   if (p.useType === 'singlefamily') {
     // TOWNHOME SUBDIVISION: real physical lot count from the row layout, not a GFA estimate
-    subdivision = subdivisionLayout(envelope, p);
+    subdivision = subdivisionLayout(envelope, p, blockers);
     units = subdivision.count;
     if (p.maxDUA > 0) { const cap = Math.floor(p.maxDUA * acres); if (units > cap) { units = cap; densityCapped = true; } }
-    unitsByType = [{ type: 'townhome', count: units, size: subdivision.unitW * subdivision.unitD }];
+    unitsByType = [{ type: subdivision.subType || 'townhome', count: units, size: subdivision.unitW * subdivision.unitD }];
   } else if (residential) {
     const mix = p.unitMix, sumPct = mix.reduce((s, m) => s + m.pct, 0) || 1;
     const avgSize = mix.reduce((s, m) => s + m.pct * m.size, 0) / sumPct;
@@ -1172,11 +1429,12 @@ function solveSite(input) {
   }
 
   // 5. parking required vs provided
-  const parkingRequired = residential
+  let parkingRequired = residential
     ? Math.ceil(units * p.parkingRatio)
     : Math.ceil(gfa / 1000 * p.parkingRatio);
-  const structured = p.parkingType === 'structured';
-  const deckType = structured || isWrap;                               // both stack multi-level parking decks
+  let parkCapped = false;
+  const structured = p.parkingType === 'structured' || isTower;        // towers always sit on a structured parking podium
+  const deckType = structured || isWrap;                               // all stack multi-level parking decks
   let parkSol, parkingProvided, parkingPerFloor = 0, garage = null;
   // levels split: above grade (podium, counts toward height) + below grade (basement, excluded from height/FAR)
   const levelsAbove = deckType ? Math.max(0, Math.round(p.parkingLevelsAbove != null ? p.parkingLevelsAbove : (p.parkingLevels || 3))) : 0;
@@ -1187,9 +1445,51 @@ function solveSite(input) {
     // TOWNHOMES self-park: each lot has its own driveway/garage (~2 spaces), no separate surface lot.
     parkSol = { stalls: [], aisles: [], connectors: [] };
     parkingProvided = units * 2;
+  } else if (industrial) {
+    // WAREHOUSE staff parking: pack the leftover end-yards (box + truck courts are no-go zones).
+    parkSol = solve({
+      boundary, buildings: [footprint], obstacles: (input.obstacles || []).concat(industrial.truckCourts), roads: input.roads || [],
+      entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
+      opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
+    });
+    parkingProvided = parkSol ? parkSol.stalls.length : 0;
+  } else if (garden) {
+    // GARDEN surface parking: pack the drive bands BETWEEN the bar buildings (each bar is a no-go zone).
+    // aisles forced PARALLEL to the bars (garden.theta) so each 62ft band double-loads cleanly.
+    parkSol = solve({
+      boundary, buildings: garden.bars, obstacles: input.obstacles || [], roads: input.roads || [], entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: garden.theta },
+      opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
+    });
+    parkingProvided = parkSol ? parkSol.stalls.length : 0;
+    // surface parking is the garden density limiter — trim the unit yield to what actually parks
+    const parkCap = Math.floor(parkingProvided / Math.max(p.parkingRatio, 0.1));
+    if (units > parkCap) {
+      units = parkCap; parkCapped = true;
+      const mix = p.unitMix, sumPct = mix.reduce((s, m) => s + m.pct, 0) || 1;
+      unitsByType = mix.map(m => ({ type: m.type, count: Math.round(units * m.pct / sumPct), size: m.size }));
+      parkingRequired = Math.ceil(units * p.parkingRatio);
+    }
+  } else if (retail) {
+    // RETAIL surface field: cars pack the big lot between the anchor and the pad outparcels (all are no-go zones).
+    parkSol = solve({
+      boundary, buildings: [retail.anchor].concat(retail.pads), obstacles: input.obstacles || [], roads: input.roads || [], entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
+      opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
+    });
+    parkingProvided = parkSol ? parkSol.stalls.length : 0;
+  } else if (datacenter) {
+    // DATA CENTRE staff lot: cars pack the front yard (data hall + substation are buildings, the mechanical yard a no-go zone).
+    parkSol = solve({
+      boundary, buildings: [datacenter.hall, datacenter.subStation], obstacles: (input.obstacles || []).concat([datacenter.mechYard]), roads: input.roads || [], entrances: input.entrances,
+      params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
+      opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
+    });
+    parkingProvided = parkSol ? parkSol.stalls.length : 0;
   } else if (deckType) {
-    // MULTI-LEVEL GARAGE: structured = deck over the whole footprint; wrap = deck over the inner core.
-    const deckPoly = isWrap ? wrapCore : footprint;
+    // MULTI-LEVEL GARAGE: structured = deck over the footprint; wrap = inner core; tower = the wider podium base.
+    const deckPoly = isTower ? towerPodium : isWrap ? wrapCore : footprint;
     const d = structuredDeck(deckPoly, p, input.entrances);
     parkingPerFloor = d.perFloor;
     parkingProvided = Math.round(parkingPerFloor * parkingLevels * structEff / 100);
@@ -1197,7 +1497,7 @@ function solveSite(input) {
     garage = { ramp: d.ramp, columns: d.columns, theta: d.theta, levelsAbove, levelsBelow, floorHeight: p.floorHeight, deckPoly, wrap: isWrap };
   } else {
     parkSol = solve({
-      boundary, buildings: [footprint], obstacles: input.obstacles || [], entrances: input.entrances,
+      boundary, buildings: [footprint], obstacles: input.obstacles || [], roads: input.roads || [], entrances: input.entrances,
       params: { angle: p.parkAngle || 90, stallW: 9, stallD: 18, aisle: 24, setback: p.parkSetback || 5, orient: 'auto' },
       opts: { adaMode: 'code', adaManual: 0, evPct: p.evPct || 0, compactPct: 0 },
     });
@@ -1206,6 +1506,23 @@ function solveSite(input) {
 
   // 6. financials
   const fin = computeFinancials(p.fin, { gfa, nrsf, units, residential });
+
+  // 6b. AUTO CORE: a service core (egress stairs + elevators) for footprint mid/high-rise buildings
+  let cores = [], coreInfo = null;
+  if (floors >= 3 && !subdivision && !garden && !industrial && !retail && !datacenter && footprint && footprint.length >= 3) {
+    const ca = Math.min(Math.max(footArea * 0.05, 380), 2600);
+    cores = [polyScaleAbout(footprint, Math.sqrt(ca / footArea), centroid(footprint))];
+    coreInfo = {
+      stairs: footArea > 12000 ? 3 : 2,                                    // ≥2 egress stairs; +1 for big floorplates
+      elevators: Math.min(residential ? Math.max(1, Math.ceil(units / 90)) : Math.max(1, Math.ceil(floors / 6)), 10),
+    };
+  }
+
+  // 6c. TURN RADIUS: the design vehicle must clear the manoeuvring space
+  const ang = p.parkAngle || 90, TURN_STD = { 90: 24, 60: 18, 45: 13, 0: 24 };
+  const turn = industrial
+    ? { ok: industrial.courtDepth >= 120, val: `卡車迴轉場 ${Math.round(industrial.courtDepth)}ft ≥ 53呎拖車需 120ft` }
+    : { ok: 24 >= (TURN_STD[ang] || 24) - 0.5, val: `車道 24ft ≥ ${ang}° 標準 ${TURN_STD[ang] || 24}ft · 雙向迴轉淨空足` };
 
   // 7. zoning compliance (Site Intelligence pass/fail)
   const compliance = [
@@ -1217,12 +1534,24 @@ function solveSite(input) {
   ];
   if (residential && p.maxDUA > 0)
     compliance.push({ k: '密度 Density', ok: units / acres <= p.maxDUA + 0.5, val: `${(units / acres).toFixed(1)} / 上限 ${p.maxDUA} DU/ac` });
+  if (industrial)
+    compliance.push({ k: '物流規模 Logistics', ok: true, info: true, val: `${industrial.dockCount} 月台門 · ${industrial.trailerCount} 拖車位 · ${industrial.dockType === 'cross' ? '雙面對流 Cross-dock' : '單面 Single-dock'}` });
+  if (hotel)
+    compliance.push({ k: '客房數 Keys', ok: true, info: true, val: `${keys} 間 · 雙載走廊 ${floors}F` });
+  if (retail)
+    compliance.push({ k: '零售規模 Retail', ok: true, info: true, val: `主力店+${retail.pads.length} pad 外帶店 · GLA ${Math.round(retail.gla).toLocaleString()} SF` });
+  if (datacenter)
+    compliance.push({ k: '機房規模 Data hall', ok: true, info: true, val: `資料機房 ${Math.round(gfa).toLocaleString()} SF · ${floors} 層 · 含機電中庭＋變電站` });
+  compliance.push({ k: '迴轉/車道 Turning', ok: turn.ok, val: turn.val });
+  if (coreInfo)
+    compliance.push({ k: '核心 Cores', ok: true, info: true, val: `${coreInfo.stairs} 逃生梯 ＋ ${coreInfo.elevators} 電梯（自動配置）` });
 
   return {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
     structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision,
-    isWrap, wrapCore,
+    isWrap, wrapCore, industrial, garden, parkCapped, hotel, keys, retail, datacenter, cores, coreInfo, footVoids,
+    tower: isTower ? { plate: footprint, podium: towerPodium, podiumLevels: levelsAbove } : null,
   };
 }
 

@@ -13,6 +13,8 @@ const S = {
   boundary: [],            // [{x,y}] in feet, single polygon
   buildings: [],           // [poly]
   obstacles: [],           // [poly]
+  roads: [],               // [poly] user-drawn internal roads (block buildings + parking, TestFit-style)
+  roadWidth: 24,           // ft, internal road width
   entrances: [],           // [{x,y}]
   solution: null,          // result from PS.solve
   tool: 'select',
@@ -350,8 +352,22 @@ function draw() {
     const sub = S.site.subdivision;
     if (sub && sub.units && sub.units.length) {
       (sub.drives || []).forEach(d => { pathPoly(d, true); ctx.fillStyle = 'rgba(148,163,184,.30)'; ctx.fill(); });   // access drives
-      sub.units.forEach(u => { pathPoly(u, true); ctx.fillStyle = 'rgba(56,189,248,.5)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); });
-      labelPoly(S.site.footprint && S.site.footprint.length >= 3 ? S.site.footprint : S.boundary, `${sub.count} 戶連棟 · ${S.site.floors}F`, '#e2e8f0');
+      const detached = sub.subType && sub.subType !== 'townhome';
+      if (detached) sub.units.forEach(lot => { pathPoly(lot, true); ctx.fillStyle = 'rgba(56,189,248,.10)'; ctx.fill(); ctx.lineWidth = 0.8; ctx.strokeStyle = 'rgba(14,165,233,.55)'; ctx.stroke(); });  // lot lines
+      (sub.houses || sub.units).forEach(h => { pathPoly(h, true); ctx.fillStyle = 'rgba(56,189,248,.55)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); });   // the houses
+      const tlabel = { townhome: '戶連棟', detached: '戶獨棟', cottage: '戶小宅' }[sub.subType] || '戶';
+      labelPoly(S.site.footprint && S.site.footprint.length >= 3 ? S.site.footprint : S.boundary, `${sub.count} ${tlabel} · ${S.site.floors}F`, '#e2e8f0');
+    } else if (S.site.garden && S.site.garden.bars.length) {
+      // GARDEN walk-up: separate low-rise bar buildings, surface parking already drawn in the bands between them
+      S.site.garden.bars.forEach(b => { pathPoly(b, true); ctx.fillStyle = 'rgba(56,189,248,.5)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); });
+      labelPoly(S.site.footprint && S.site.footprint.length >= 3 ? S.site.footprint : S.boundary, `${S.site.garden.rows} 棟花園公寓 · ${S.site.units} 戶 · ${S.site.floors}F`, '#e2e8f0');
+    } else if (S.site.tower && S.site.tower.podium) {
+      // TOWER: wide parking podium base (dashed) with the slender point-tower plate on top
+      const tw = S.site.tower;
+      ctx.save(); ctx.setLineDash([6, 4]); pathPoly(tw.podium, true); ctx.fillStyle = 'rgba(56,189,248,.14)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(56,189,248,.7)'; ctx.stroke(); ctx.restore();
+      fillVoids(tw.plate, S.site.footVoids, 'rgba(37,99,235,.62)', '#1d4ed8', 2);
+      hatch(tw.plate, '#bfdbfe', .3);
+      labelPoly(tw.plate, `塔樓 ${S.site.units} 戶 · ${S.site.floors}F · 基座${tw.podiumLevels}層車庫`, '#e2e8f0');
     } else if (S.site.isWrap && S.site.wrapCore && S.site.footprint && S.site.footprint.length >= 3) {
       // WRAP: residential RING = footprint with the parking core cut out (the garage deck shows in the hole)
       ctx.beginPath();
@@ -360,13 +376,40 @@ function draw() {
       ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill('evenodd');
       ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; pathPoly(S.site.footprint, true); ctx.stroke(); pathPoly(S.site.wrapCore, true); ctx.stroke();
       labelPoly(S.site.footprint, `環繞 · ${S.site.units} 戶 · ${S.site.floors}F`, '#e2e8f0');
+    } else if (S.site.industrial) {
+      // WAREHOUSE: paved truck courts, 53' trailer stalls, the clear-span box, dock-door teeth
+      const ind = S.site.industrial;
+      ind.truckCourts.forEach(c => { pathPoly(c, true); ctx.fillStyle = 'rgba(100,116,139,.16)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(100,116,139,.45)'; ctx.stroke(); });
+      ind.trailerStalls.forEach(t => { pathPoly(t, true); ctx.fillStyle = 'rgba(234,179,8,.16)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(202,138,4,.8)'; ctx.stroke(); });
+      fillVoids(S.site.footprint, S.site.footVoids, 'rgba(71,85,105,.82)', '#1e293b', 2);
+      ctx.fillStyle = '#0f172a'; ind.dockDoors.forEach(d => { pathPoly(d, true); ctx.fill(); });
+      labelPoly(S.site.footprint, `倉儲 ${ind.dockType === 'cross' ? '雙面對流' : '單面'}卸貨 · ${ind.dockCount} 門 · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+    } else if (S.site.retail) {
+      // RETAIL: anchor / inline-shop strip (the footprint) + pad outparcels near the street; the big lot is drawn as parking
+      const rt = S.site.retail;
+      fillVoids(rt.anchor, S.site.footVoids, 'rgba(37,99,235,.55)', '#1d4ed8', 2); hatch(rt.anchor, '#bfdbfe', .3);
+      rt.pads.forEach(p => { pathPoly(p, true); ctx.fillStyle = 'rgba(99,102,241,.6)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#4338ca'; ctx.stroke(); });
+      labelPoly(rt.anchor, `零售中心 · ${rt.pads.length} pad 外帶店 · GLA ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+    } else if (S.site.datacenter) {
+      // DATA CENTRE: data-hall box + fenced mechanical/generator yard + substation pad
+      const dc = S.site.datacenter;
+      pathPoly(dc.mechYard, true); ctx.fillStyle = 'rgba(245,158,11,.14)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(217,119,6,.7)'; ctx.stroke(); hatch(dc.mechYard, '#f59e0b', .5);
+      pathPoly(dc.subStation, true); ctx.fillStyle = 'rgba(220,38,38,.22)'; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = '#dc2626'; ctx.stroke(); hatch(dc.subStation, '#ef4444', .4);
+      fillVoids(dc.hall, S.site.footVoids, 'rgba(51,65,85,.85)', '#0f172a', 2);
+      labelPoly(dc.hall, `資料機房 · ${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+      const c = PS.centroid(dc.mechYard), sc = toScreen(c); ctx.fillStyle = 'rgba(120,53,15,.95)'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('機電中庭', sc.x, sc.y);
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
-      pathPoly(S.site.footprint, true);
-      ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; ctx.stroke();
+      fillVoids(S.site.footprint, S.site.footVoids, 'rgba(56,189,248,.42)', '#38bdf8', 2);
       hatch(S.site.footprint, '#bae6fd', .3);
-      labelPoly(S.site.footprint, `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+      const lbl = S.site.hotel ? `旅館 ${S.site.keys} 房 · ${S.site.floors}F` : `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`;
+      labelPoly(S.site.footprint, lbl, '#e2e8f0');
     }
+    // AUTO CORE: service core (stairs + elevators) drawn in the building plan
+    (S.site.cores || []).forEach(core => {
+      pathPoly(core, true); ctx.fillStyle = 'rgba(15,23,42,.6)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(226,232,240,.7)'; ctx.stroke();
+      const cc = PS.centroid(core), sc = toScreen(cc);
+      ctx.fillStyle = 'rgba(241,245,249,.95)'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('核心', sc.x, sc.y);
+    });
   }
 
   // buildings — each with its own colour / opacity, void courtyards punched out
@@ -382,6 +425,15 @@ function draw() {
     }
     hatch(fp, shade(col, 0.4), .2);
     labelPoly(fp, 'BUILDING', '#e2e8f0');
+  }
+  // internal roads (user-drawn) — asphalt strips the buildings + parking flow around
+  for (const r of (S.roads || [])) {
+    pathPoly(r, true);
+    ctx.fillStyle = 'rgba(51,61,79,.82)'; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(148,163,184,.6)'; ctx.stroke();
+    const m0 = toScreen({ x: (r[0].x + r[3].x) / 2, y: (r[0].y + r[3].y) / 2 }), m1 = toScreen({ x: (r[1].x + r[2].x) / 2, y: (r[1].y + r[2].y) / 2 });
+    ctx.save(); ctx.setLineDash([9, 8]); ctx.strokeStyle = 'rgba(250,204,21,.8)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(m0.x, m0.y); ctx.lineTo(m1.x, m1.y); ctx.stroke(); ctx.restore();
   }
   // obstacles
   for (const o of (S.layers.obstacle.vis ? S.obstacles : [])) {
@@ -430,6 +482,22 @@ function pathPoly(poly, close) {
 function subPath(poly) {                    // add a closed sub-path to the CURRENT path (for even-odd holes)
   poly.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   ctx.closePath();
+}
+// buffer a centre-line polyline into a chain of road strips (one rectangle per segment, ends extended to join)
+function bufferPolyline(pts, width) {
+  const h = width / 2, rects = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * h, ny = dx / len * h, ex = dx / len * h, ey = dy / len * h;   // normal + end-cap extension
+    rects.push([{ x: a.x - ex + nx, y: a.y - ey + ny }, { x: b.x + ex + nx, y: b.y + ey + ny }, { x: b.x + ex - nx, y: b.y + ey - ny }, { x: a.x - ex - nx, y: a.y - ey - ny }]);
+  }
+  return rects;
+}
+// fill a building footprint with facility/road VOIDS punched out (even-odd), so it wraps around them
+function fillVoids(outer, voids, fill, stroke, lw) {
+  ctx.beginPath(); subPath(outer); (voids || []).forEach(subPath);
+  ctx.fillStyle = fill; ctx.fill('evenodd');
+  if (stroke) { ctx.lineWidth = lw || 2; ctx.strokeStyle = stroke; pathPoly(outer, true); ctx.stroke(); (voids || []).forEach(v => { pathPoly(v, true); ctx.stroke(); }); }
 }
 
 function drawStall(s) {
@@ -545,16 +613,21 @@ function drawDraft() {
   const pts = S.draft.slice();
   if (S.hoverWorld) pts.push(S.hoverWorld);
   ctx.save();
-  ctx.setLineDash([6, 4]); ctx.lineWidth = 1.8;
-  ctx.strokeStyle = S.draftKind === 'obstacle' ? '#ef4444' : S.draftKind === 'building' ? '#94a3b8' : '#38bdf8';
+  ctx.setLineDash([6, 4]); ctx.lineWidth = S.draftKind === 'road' ? 3 : 1.8;
+  ctx.strokeStyle = S.draftKind === 'obstacle' ? '#ef4444' : S.draftKind === 'building' ? '#94a3b8' : S.draftKind === 'road' ? '#facc15' : '#38bdf8';
   pathPoly(pts, false); ctx.stroke();
   ctx.setLineDash([]);
   for (const v of S.draft) {
     const p = toScreen(v);
     ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
   }
+  if (S.draftKind === 'road' && S.draft.length >= 2) {                  // hint: how to finish an open road
+    const last = toScreen(S.draft[S.draft.length - 1]);
+    ctx.fillStyle = 'rgba(250,204,21,.95)'; ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText('雙擊或 Enter 完成道路', last.x + 10, last.y - 6);
+  }
   // highlight close target
-  if (S.draft.length >= 3 && S.hoverWorld) {
+  if (S.draftKind !== 'road' && S.draft.length >= 3 && S.hoverWorld) {
     const first = toScreen(S.draft[0]);
     const hv = toScreen(S.hoverWorld);
     if (Math.hypot(first.x - hv.x, first.y - hv.y) < 12) {
@@ -899,6 +972,7 @@ function draw3D() {
       faces.push({ pts: s.poly.map(p => ({ x: p.x, y: p.y, z: 0 })), fill: hexA(col, .9), stroke: hexA(col, 1), depth: baseDepth(s.poly), z: 0 });
     }
   }
+  (S.roads || []).forEach(r => faces.push({ pts: r.map(p => ({ x: p.x, y: p.y, z: 0.04 })), fill: 'rgba(51,61,79,.85)', stroke: 'rgba(148,163,184,.6)', depth: baseDepthArr(r), z: 0.04 }));
   S.obstacles.forEach(o => pushBox(faces, o, 3, '#7f1d1d'));
   S.buildings.forEach(b => pushBox(faces, b.poly, bHeight(b), b.color || '#64748b', 'BUILDING', b.roof !== false, b.voids));
   // site-mode residential massing. TOWNHOME SUBDIVISION = many small unit blocks + drives;
@@ -908,13 +982,39 @@ function draw3D() {
     if (sub && sub.units && sub.units.length) {
       (sub.drives || []).forEach(d => faces.push({ pts: d.map(p => ({ x: p.x, y: p.y, z: 0.02 })), fill: 'rgba(148,163,184,.28)', stroke: 'rgba(148,163,184,.5)', depth: baseDepthArr(d), z: 0.02 }));
       const uh = Math.max(S.site.height, 20);
-      sub.units.forEach(u => pushBox(faces, u, uh, '#0ea5e9', null, true, null, 0));
+      if (sub.subType && sub.subType !== 'townhome') sub.units.forEach(lot => faces.push({ pts: lot.map(p => ({ x: p.x, y: p.y, z: 0.015 })), fill: 'rgba(56,189,248,.10)', stroke: 'rgba(14,165,233,.5)', depth: baseDepthArr(lot), z: 0.015 }));  // lot lines
+      (sub.houses || sub.units).forEach(h => pushBox(faces, h, uh, '#0ea5e9', null, true, null, 0));
+    } else if (S.site.garden && S.site.garden.bars.length) {
+      // GARDEN walk-up: each low-rise bar building as its own block (surface parking packs the bands between)
+      S.site.garden.bars.forEach((b, i) => pushBox(faces, b, S.site.height, '#0ea5e9', i === 0 ? `${S.site.garden.rows}棟 ${S.site.floors}F` : null, true, null, 0));
+    } else if (S.site.tower && S.site.tower.podium) {
+      // TOWER: translucent parking podium (decks show through) with the slender point-tower rising above
+      const tw = S.site.tower, fh = (S.site.garage && S.site.garage.floorHeight) || 11, podH = tw.podiumLevels * fh;
+      pushBox(faces, tw.podium, podH, '#64748b', null, true, null, 0, 0.4);
+      pushBox(faces, tw.plate, S.site.height, '#2563eb', `${S.site.floors}F`, true, null, podH);
     } else if (S.site.isWrap && S.site.wrapCore && S.site.footprint && S.site.footprint.length >= 3) {
       // WRAP: residential RING = footprint with the parking core punched out (core decks show through)
       pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, [S.site.wrapCore], 0, 0.45);
+    } else if (S.site.industrial) {
+      // WAREHOUSE: paved courts + trailer aprons on the ground, then the tall single-storey clear-span box
+      const ind = S.site.industrial;
+      ind.truckCourts.forEach(c => faces.push({ pts: c.map(p => ({ x: p.x, y: p.y, z: 0.02 })), fill: 'rgba(100,116,139,.30)', stroke: 'rgba(100,116,139,.55)', depth: baseDepthArr(c), z: 0.02 }));
+      ind.trailerStalls.forEach(t => faces.push({ pts: t.map(p => ({ x: p.x, y: p.y, z: 0.03 })), fill: 'rgba(234,179,8,.22)', stroke: 'rgba(202,138,4,.7)', depth: baseDepthArr(t), z: 0.03 }));
+      pushBox(faces, S.site.footprint, S.site.height, '#475569', `倉儲 ${ind.dockCount}門`, true, null, 0);
+    } else if (S.site.retail) {
+      // RETAIL: single-storey anchor strip + pad outparcels (surface lot packs the rest)
+      const rt = S.site.retail, rh = Math.max(S.site.height, 16);
+      pushBox(faces, rt.anchor, rh, '#2563eb', `零售 GLA`, true, null, 0);
+      rt.pads.forEach(p => pushBox(faces, p, Math.max(rh * 0.85, 14), '#4f46e5', null, true, null, 0));
+    } else if (S.site.datacenter) {
+      // DATA CENTRE: tall data hall + ground mechanical yard + substation pad
+      const dc = S.site.datacenter;
+      faces.push({ pts: dc.mechYard.map(p => ({ x: p.x, y: p.y, z: 0.03 })), fill: 'rgba(245,158,11,.30)', stroke: 'rgba(217,119,6,.7)', depth: baseDepthArr(dc.mechYard), z: 0.03 });
+      pushBox(faces, dc.subStation, 12, '#b91c1c', null, true, null, 0);
+      pushBox(faces, dc.hall, S.site.height, '#334155', `機房 ${S.site.floors}F`, true, null, 0);
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
       const podium = S.site.structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
-      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, null, podium, S.site.structured ? 0.4 : null);
+      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, S.site.footVoids, podium, S.site.structured ? 0.4 : null);
     }
   }
 
@@ -1032,10 +1132,10 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) return;  // right handled on contextmenu
 
-  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle') {
+  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road') {
     if (!S.draft) { S.draft = []; S.draftKind = S.tool; }
-    // snap to first point to close
-    if (S.draft.length >= 3) {
+    // closed shapes snap to the first point to close; a road is an open polyline (double-click / Enter to finish)
+    if (S.tool !== 'road' && S.draft.length >= 3) {
       const f = toScreen(S.draft[0]), sp = toScreen(w);
       if (Math.hypot(f.x - sp.x, f.y - sp.y) < 12) { finishDraft(); return; }
     }
@@ -1103,7 +1203,7 @@ cv.addEventListener('pointerdown', e => {
 
 cv.addEventListener('pointermove', e => {
   const w = evtWorld(e);
-  S.hoverWorld = ['boundary', 'building', 'obstacle', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
+  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
   if ((S.tool === 'subdivide' && S.splitPt) || (S.tool === 'measure' && S.measureStart)) draw();
   $('#stCoord').textContent = `${w.x.toFixed(1)} , ${w.y.toFixed(1)} ft`;
 
@@ -1159,6 +1259,7 @@ cv.addEventListener('contextmenu', e => {
 
 // click selected stall again cycles type (handled via dblclick for clarity)
 cv.addEventListener('dblclick', e => {
+  if (S.draftKind === 'road' && S.draft && S.draft.length >= 2) { finishDraft(); return; }   // double-click ends an open road
   if (S.tool !== 'select') return;
   const w = evtWorld(e);
   const eh = pickable('entrance') ? entranceAt(w) : null;
@@ -1205,7 +1306,8 @@ function snap(w) {                   // 1-ft snap when zoomed in
 }
 
 function finishDraft() {
-  if (!S.draft || S.draft.length < 3) { S.draft = null; S.draftKind = null; draw(); return; }
+  const minPts = S.draftKind === 'road' ? 2 : 3;
+  if (!S.draft || S.draft.length < minPts) { S.draft = null; S.draftKind = null; draw(); return; }
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null; msg = '基地完成，按「自動排車位」'; }
@@ -1222,13 +1324,17 @@ function finishDraft() {
     S.obstacles.push(poly);
     if (S.boundary.length >= 3 && !PS.polyOverlap(poly, S.boundary)) msg = '⚠️ 障礙畫在基地範圍外，對排版無影響';
   }
+  else if (S.draftKind === 'road') {
+    S.roads.push(...bufferPolyline(poly, S.roadWidth || 24));   // centreline → road strips; buildings + parking flow around
+    msg = '已新增社區道路，格局自動繞開';
+  }
   S.draft = null; S.draftKind = null;
   updateMetrics();
   if (S.mapMode) draw(); else fitView();
   // if this triggers a re-solve, let doSolve/doSolveSite commit the FINAL state (one clean undo step);
   // committing here too would record a stale intermediate (shape added, stalls not yet recomputed).
-  const reSolving = (kind === 'obstacle' || kind === 'building') && (S.mode === 'site' ? !!S.site : !!S.solution);
-  if (kind === 'obstacle' || kind === 'building') resolveActive();   // re-pack so stalls clear under the new shape
+  const reSolving = (kind === 'obstacle' || kind === 'building' || kind === 'road') && (S.mode === 'site' ? !!S.site : !!S.solution);
+  if (kind === 'obstacle' || kind === 'building' || kind === 'road') resolveActive();   // re-pack so stalls clear under the new shape
   if (!reSolving) commit();
   toast(msg);
 }
@@ -1250,7 +1356,7 @@ window.addEventListener('keydown', e => {
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -1259,10 +1365,10 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
-  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle') { S.draft = null; }
+  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
   draw();
@@ -1298,7 +1404,7 @@ function doSolve() {
   setTimeout(() => {
     const t0 = performance.now();
     const res = PS.solve({
-      boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, entrances: S.entrances,
+      boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances,
       params: S.params, opts: S.opts,
     });
     S.solution = res; S.selStall = null;
@@ -1448,7 +1554,7 @@ function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const e
 function serialize() {
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles,
+    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads,
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -1458,7 +1564,7 @@ function serialize() {
 }
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
-  S.obstacles = d.obstacles || []; S.entrances = d.entrances || [];
+  S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.entrances = d.entrances || [];
   S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
@@ -1733,7 +1839,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -1889,6 +1995,8 @@ $('#helpClose').onclick = () => $('#help').style.display = 'none';
 /* ----------------------------- site solver mode -------------------------- */
 const USE_PRESETS = {
   multifamily:  { floorH: 11, eff: 82, parkRatio: 1.5, resi: true },
+  tower:        { floorH: 11, eff: 80, parkRatio: 1.0, resi: true },
+  garden:       { floorH: 11, eff: 84, parkRatio: 1.5, resi: true },
   singlefamily: { floorH: 10, eff: 92, parkRatio: 2.0, resi: true },
   mixeduse:     { floorH: 12, eff: 80, parkRatio: 1.3, resi: true },
   office:       { floorH: 13, eff: 85, parkRatio: 3.0, resi: false },
@@ -1897,7 +2005,8 @@ const USE_PRESETS = {
   industrial:   { floorH: 28, eff: 95, parkRatio: 1.0, resi: false },
   datacenter:   { floorH: 20, eff: 85, parkRatio: 0.3, resi: false },
 };
-const UNIT_LABEL = { studio: 'Studio 套房', '1br': '1-Bed 一房', '2br': '2-Bed 二房', '3br': '3-Bed 三房' };
+const UNIT_LABEL = { studio: 'Studio 套房', '1br': '1-Bed 一房', '2br': '2-Bed 二房', '3br': '3-Bed 三房',
+  townhome: '連棟 Townhome', detached: '獨棟 Detached', cottage: '小宅 Cottage/ADU' };
 
 function setMode(mode) {
   S.mode = mode;
@@ -1927,6 +2036,8 @@ function readSiteParams() {
     setbacks: { front: U.Lr(+$('#zSbF').value), side: U.Lr(+$('#zSbS').value), rear: U.Lr(+$('#zSbR').value) },
     parkingRatio: +$('#zPark').value, parkAngle: S.siteParkAngle || 90, parkSetback: 5, evPct: 0,
     parkingType: ($('#sParkType') ? $('#sParkType').value : 'surface'),
+    dockType: ($('#sDockType') ? $('#sDockType').value : 'cross'),
+    subType: ($('#sSubType') ? $('#sSubType').value : 'townhome'),
     parkingLevelsAbove: ($('#sParkLevelsAbove') ? +$('#sParkLevelsAbove').value : 3),
     parkingLevelsBelow: ($('#sParkLevelsBelow') ? +$('#sParkLevelsBelow').value : 0),
     structEff: ($('#sStructEff') ? +$('#sStructEff').value : 95) || 95,
@@ -1950,7 +2061,7 @@ function doSolveSite() {
   $('#busy').classList.add('show'); $('#busyTxt').textContent = '配置建案量體中…';
   setTimeout(() => {
     const t0 = performance.now();
-    S.site = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles });
+    S.site = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
     $('#busy').classList.remove('show');
     updateSiteMetrics(); draw(); commit();
     const ms = Math.round(performance.now() - t0);
@@ -1984,6 +2095,25 @@ function updateSiteMetrics() {
       const ct = document.createElement('span'); ct.className = 'ct'; ct.textContent = u.count;
       row.append(sw, nm, ct); bd.appendChild(row);
     });
+    if (s.industrial) {                                    // warehouse: dock doors + trailer stalls + clear height
+      const ind = s.industrial;
+      [['🚛 卸貨月台門 Dock doors', ind.dockCount + ' 門'],
+       ['🚚 拖車位 Trailer stalls', ind.trailerCount + ' 位'],
+       ['📐 淨高 Clear height', Math.round(U.L(s.height)) + ' ' + U.lu()]].forEach(([label, val]) => {
+        const row = document.createElement('div'); row.className = 'brow';
+        const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = '#64748b';
+        const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = label;
+        const ct = document.createElement('span'); ct.className = 'ct'; ct.textContent = val;
+        row.append(sw, nm, ct); bd.appendChild(row);
+      });
+    }
+    if (s.hotel) {                                          // hotel: room keys
+      const row = document.createElement('div'); row.className = 'brow';
+      const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = '#0ea5e9';
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = '🛎️ 客房 Keys · 雙載走廊';
+      const ct = document.createElement('span'); ct.className = 'ct'; ct.textContent = s.keys + ' 間';
+      row.append(sw, nm, ct); bd.appendChild(row);
+    }
     const pr = document.createElement('div'); pr.className = 'hint'; pr.style.marginTop = '4px';
     const parkTxt = s.isWrap
       ? `🏟️ 環繞車庫 地上${s.levelsAbove}+地下${s.levelsBelow}層 × ${s.parkingPerFloor}/層（核心）= 提供 ${s.parkingProvided} / 需 ${s.parkingRequired}`
@@ -1999,14 +2129,15 @@ function updateSiteMetrics() {
 function renderCompliance(s) {
   const box = $('#complianceList'); box.innerHTML = '';
   if (!s) { box.innerHTML = '<div class="hint">畫好基地、按「自動配置建案」後顯示。</div>'; return; }
-  const pass = s.compliance.filter(c => c.ok).length, total = s.compliance.length;
+  const checks = s.compliance.filter(c => !c.info);        // info rows (e.g. logistics scale) don't count as pass/fail
+  const pass = checks.filter(c => c.ok).length, total = checks.length;
   const score = document.createElement('div');
   score.id = 'complianceScore'; score.className = pass === total ? 'pass' : 'fail';
   score.textContent = pass === total ? `✓ 全數通過 (${pass}/${total})` : `✕ ${total - pass} 項不符法規 (${pass}/${total} 通過)`;
   box.appendChild(score);
   s.compliance.forEach(c => {
     const row = document.createElement('div'); row.className = 'cc';
-    const b = document.createElement('span'); b.className = 'badge ' + (c.ok ? 'ok' : 'no'); b.textContent = c.ok ? '✓' : '✕';
+    const b = document.createElement('span'); b.className = 'badge ' + (c.info ? 'info' : c.ok ? 'ok' : 'no'); b.textContent = c.info ? 'ℹ' : c.ok ? '✓' : '✕';
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = c.k;
     const v = document.createElement('span'); v.className = 'val'; v.textContent = c.val;
     row.append(b, nm, v); box.appendChild(row);
@@ -2014,6 +2145,10 @@ function renderCompliance(s) {
   if (s.densityCapped) {
     const h = document.createElement('div'); h.className = 'hint'; h.style.marginTop = '6px';
     h.textContent = '※ 戶數受密度上限（DU/acre）限制，未用滿容積。'; box.appendChild(h);
+  }
+  if (s.parkCapped) {
+    const h = document.createElement('div'); h.className = 'hint'; h.style.marginTop = '6px';
+    h.textContent = '※ 花園公寓戶數受地面停車容量限制（低層多棟的密度限制因子）。'; box.appendChild(h);
   }
 }
 
@@ -2024,7 +2159,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2044,12 +2179,17 @@ const DEMOS = [
   { key: 'pk-mix',   g: '停車型態', label: '地上2+地下2 混合',    parcel: 'sample', use: 'multifamily', park: 'structured', above: 2, below: 2 },
   { key: 'pk-wrap',  g: '停車型態', label: '環繞車庫 Wrap',       parcel: 'sample', use: 'multifamily', park: 'wrap', above: 5, below: 0 },
   { key: 'u-mf',  g: '建築用途', label: '多戶住宅 Multifamily',   parcel: 'sample', use: 'multifamily',  park: 'structured', above: 3, below: 0 },
-  { key: 'u-sf',  g: '建築用途', label: '獨棟/連棟 Single-family', parcel: 'sample', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35 },
+  { key: 'u-twr', g: '建築用途', label: '高層塔樓 Tower（點式高樓）', parcel: 'big', use: 'tower', park: 'structured', above: 2, below: 0, far: 8, cov: 60, hgtFt: 300 },
+  { key: 'u-sf',  g: '建築用途', label: '連棟 Townhome', parcel: 'sample', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35, sub: 'townhome' },
+  { key: 'u-sf2', g: '建築用途', label: '獨棟 Detached（大地坪+院）', parcel: 'big', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35, sub: 'detached' },
+  { key: 'u-sf3', g: '建築用途', label: '小宅 Cottage / ADU', parcel: 'sample', use: 'singlefamily', park: 'surface', far: 0.55, cov: 35, sub: 'cottage' },
+  { key: 'u-grd', g: '建築用途', label: '花園公寓 Garden（低層多棟）', parcel: 'big', use: 'garden', park: 'surface', far: 1.0, cov: 45 },
   { key: 'u-mix', g: '建築用途', label: '複合用途 Mixed-use',     parcel: 'sample', use: 'mixeduse',     park: 'structured', above: 2, below: 1 },
   { key: 'u-off', g: '建築用途', label: '辦公 Office',            parcel: 'sample', use: 'office',       park: 'structured', above: 3, below: 1 },
-  { key: 'u-ret', g: '建築用途', label: '零售 Retail',            parcel: 'wide',   use: 'retail',       park: 'surface', far: 0.4, cov: 22 },
-  { key: 'u-hot', g: '建築用途', label: '旅館 Hotel',             parcel: 'sample', use: 'hotel',        park: 'structured', above: 2, below: 2 },
-  { key: 'u-ind', g: '建築用途', label: '工業 Industrial',        parcel: 'big',    use: 'industrial',   park: 'surface', far: 0.6, cov: 48 },
+  { key: 'u-ret', g: '建築用途', label: '零售中心 Retail（主力店+pad）', parcel: 'big', use: 'retail',  park: 'surface', far: 0.4, cov: 30 },
+  { key: 'u-hot', g: '建築用途', label: '旅館 Hotel',             parcel: 'big',    use: 'hotel',        park: 'surface', far: 1.5, cov: 40 },
+  { key: 'u-ind', g: '建築用途', label: '工業 雙面對流 Cross-dock', parcel: 'big',  use: 'industrial',   park: 'surface', far: 0.6, cov: 48, dock: 'cross' },
+  { key: 'u-ind2',g: '建築用途', label: '物流 單面 Single-dock',  parcel: 'big',    use: 'industrial',   park: 'surface', far: 0.6, cov: 48, dock: 'single' },
   { key: 'u-dc',  g: '建築用途', label: '資料中心 Data Center',   parcel: 'huge',   use: 'datacenter',   park: 'surface', far: 1.0, cov: 55 },
 ];
 function loadDemo(d) {
@@ -2058,18 +2198,23 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
   const pre = USE_PRESETS[d.use] || USE_PRESETS.multifamily;
-  $('#sFloorH').value = pre.floorH; $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;
+  $('#sFloorH').value = round2(U.L(pre.floorH)); $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;   // preset floorH is in ft → convert to the display unit
   $('#grpUnitMix').style.display = pre.resi ? '' : 'none';
   $('#fRentResiRow').style.display = pre.resi ? '' : 'none';
   $('#fRentCommRow').style.display = pre.resi ? 'none' : '';
   $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
+  ['#rowDockType', '#dockTypeHint'].forEach(id => $(id).style.display = d.use === 'industrial' ? '' : 'none');
+  if (d.dock) $('#sDockType').value = d.dock;
+  $('#rowSubType').style.display = d.use === 'singlefamily' ? '' : 'none';
+  if (d.sub) $('#sSubType').value = d.sub;
   $('#zFAR').value = d.far != null ? d.far : 2.25;            // per-demo zoning (low-rise types get lower FAR/coverage)
   $('#zCov').value = d.cov != null ? d.cov : 50;
+  if (d.hgtFt) $('#zHeight').value = round2(U.L(d.hgtFt));    // tall types (tower) override the height limit (ft → display unit)
   const deck = ['structured', 'wrap'].includes(d.park);       // both stack parking decks → show level controls
   $('#sParkType').value = d.park || 'surface';
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
@@ -2091,14 +2236,18 @@ function loadDemo(d) {
 // wiring
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 $('#sUse').addEventListener('change', () => {
-  const pre = USE_PRESETS[$('#sUse').value];
-  $('#sFloorH').value = pre.floorH; $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;
+  const use = $('#sUse').value, pre = USE_PRESETS[use];
+  $('#sFloorH').value = round2(U.L(pre.floorH)); $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;   // preset floorH is in ft → convert to the display unit
   $('#grpUnitMix').style.display = pre.resi ? '' : 'none';
   $('#fRentResiRow').style.display = pre.resi ? '' : 'none';
   $('#fRentCommRow').style.display = pre.resi ? 'none' : '';
   $('#zParkHint').textContent = pre.resi ? '住宅：車位 / 戶。' : '商用 / 工業：車位 / 1000 SF。';
+  ['#rowDockType', '#dockTypeHint'].forEach(id => $(id).style.display = use === 'industrial' ? '' : 'none');  // warehouse-only control
+  $('#rowSubType').style.display = use === 'singlefamily' ? '' : 'none';                                      // single-family lot-type control
   if (S.boundary.length >= 3) doSolveSite();
 });
+$('#sDockType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
+$('#sSubType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sParkType').addEventListener('change', () => {
   const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
@@ -2331,7 +2480,7 @@ function generateOptions() {
         const um = b.mix ? b.mix.map(m => ({ type: m[0], pct: m[1], size: m[2] })) : pbase.unitMix;
         const p = { ...pbase, parkAngle: a, unitMix: um, parkingType: pc.park,
           parkingLevelsAbove: pc.above != null ? pc.above : 0, parkingLevelsBelow: pc.below != null ? pc.below : 0 };
-        const sol = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles });
+        const sol = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
         if (sol) out.push({
           kind: 'site', parkAngle: a, unitMix: um, park: pc.park, above: pc.above, below: pc.below,
           kpi: sol.parkingProvided, thumb: thumbFor(sol.parkSol, sol.footprint),
@@ -2344,7 +2493,7 @@ function generateOptions() {
     } else {
       const seen = new Set();
       for (const o of ['auto', '0', '90', 'edge']) for (const a of [90, 60, 45]) {
-        const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, entrances: S.entrances, params: { ...S.params, orient: o, angle: a }, opts: S.opts });
+        const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances, params: { ...S.params, orient: o, angle: a }, opts: S.opts });
         if (!sol) continue;
         const key = sol.count + '_' + a; if (seen.has(key)) continue; seen.add(key);
         out.push({
@@ -2620,7 +2769,7 @@ function autoOptimize() {
     if (S.mode === 'site') {
       let bestA = 90, bestV = -1;
       for (const a of [90, 60, 45]) {
-        const sol = PS.solveSite({ boundary: S.boundary, p: { ...readSiteParams(), parkAngle: a }, entrances: S.entrances, obstacles: S.obstacles });
+        const sol = PS.solveSite({ boundary: S.boundary, p: { ...readSiteParams(), parkAngle: a }, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
         if (sol && sol.parkingProvided > bestV) { bestV = sol.parkingProvided; bestA = a; }
       }
       S.siteParkAngle = bestA; $('#busy').classList.remove('show'); doSolveSite();
@@ -2634,7 +2783,7 @@ function autoOptimize() {
     const aisleFor = (a, ow) => AISLE_BY_ANGLE[a][ow ? 'one' : 'two'] * regionScale;
     let best = null;
     for (const o of ['auto', '0', '90', 'edge']) for (const a of [90, 60, 45]) for (const ow of [false, true]) {
-      const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, entrances: S.entrances,
+      const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, entrances: S.entrances,
         params: { ...S.params, orient: o, angle: a, aisle: aisleFor(a, ow), oneway: ow }, opts: S.opts });
       if (!sol) continue;
       // if a target is set: among configs that MEET it pick the cleanest (two-way/90°);
