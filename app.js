@@ -18,6 +18,7 @@ const S = {
   roadWidth: 24,           // ft, internal road width
   parkZones: [],           // [poly] free-shape parking areas — when set, stalls pack ONLY inside these
   manualCores: [],         // [poly] user-placed service cores (stairs+elevators); override the auto core when present
+  contextBuildings: [],    // [{poly,height}] surrounding existing buildings from OSM (3D context, map mode)
   entrances: [],           // [{x,y}]
   solution: null,          // result from PS.solve
   tool: 'select',
@@ -204,6 +205,24 @@ window.addEventListener('resize', resize);
 // In map mode, world coordinates (feet) project through Leaflet so drawings
 // stay locked to the real-world imagery; otherwise the plain canvas transform.
 const FT_PER_M = 3.280839895;
+// OSM CONTEXT: pull surrounding building footprints from OpenStreetMap (free Overpass API) → existing 3D context.
+async function fetchContextBuildings() {
+  if (!S.mapMode || !S.map) { toast('請先開啟「地圖」底圖，再載入周邊建物'); return; }
+  const bd = S.map.getBounds(), q = `[out:json][timeout:20];(way["building"](${bd.getSouth()},${bd.getWest()},${bd.getNorth()},${bd.getEast()}););out body;>;out skel qt;`;
+  toast('載入周邊建物中…（OSM）');
+  try {
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q) });
+    const j = await r.json(), nodes = {};
+    for (const el of j.elements) if (el.type === 'node') nodes[el.id] = { lat: el.lat, lng: el.lon };
+    const bldgs = [];
+    for (const el of j.elements) if (el.type === 'way' && el.nodes && el.tags && el.tags.building) {
+      const poly = el.nodes.map(id => nodes[id]).filter(Boolean).map(ll => latLngToFeet(ll));
+      if (poly.length >= 3) bldgs.push({ poly, height: (parseFloat(el.tags['building:levels']) || 2) * 11 });
+    }
+    S.contextBuildings = bldgs; draw();
+    toast(bldgs.length ? `已載入 ${bldgs.length} 棟周邊既有建物 — 切「3D 量體」看 context` : '這個範圍 OSM 沒有建物資料');
+  } catch (e) { toast('周邊建物載入失敗（需網路；OSM 服務忙碌時稍後再試）'); }
+}
 function latLngToFeet(ll) {
   const mLat = 111320, mLng = 111320 * Math.cos(S.geo.lat0 * Math.PI / 180);
   return { x: (ll.lng - S.geo.lng0) * mLng * FT_PER_M, y: -(ll.lat - S.geo.lat0) * mLat * FT_PER_M };
@@ -1083,6 +1102,7 @@ function draw3D() {
     }
   }
   (S.roads || []).forEach(r => faces.push({ pts: r.map(p => ({ x: p.x, y: p.y, z: 0.04 })), fill: 'rgba(51,61,79,.85)', stroke: 'rgba(148,163,184,.6)', depth: baseDepthArr(r), z: 0.04 }));
+  (S.contextBuildings || []).forEach(cb => pushBox(faces, cb.poly, cb.height, '#94a3b8', null, true, null, 0, 0.5));   // OSM surrounding context
   S.obstacles.forEach(o => pushBox(faces, o, 3, '#7f1d1d'));
   S.buildings.forEach(b => pushBox(faces, b.poly, bHeight(b), b.color || '#64748b', 'BUILDING', b.roof !== false, b.voids));
   // site-mode residential massing. TOWNHOME SUBDIVISION = many small unit blocks + drives;
@@ -1984,7 +2004,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2505,6 +2525,7 @@ document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventList
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
 $('#btnFlow').onclick = () => toggleLayer('flow', 'vis');   // 動線體檢 is a toggleable layer (also in the object tree)
 $('#btnMetes').onclick = openMetesModal;
+$('#btnContext').onclick = fetchContextBuildings;
 $('#btnCloud').onclick = openCloudModal;
 $('#panelToggle').onclick = () => { const open = $('#panel').classList.toggle('open'); $('#panelToggle').innerHTML = open ? '✕ 收起面板' : '⚙ 參數'; };
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
