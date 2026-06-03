@@ -2499,6 +2499,7 @@ document.querySelectorAll('#twPanel input[name=twbase]').forEach(r => r.addEvent
 document.querySelectorAll('#twPanel input[data-ov]').forEach(c => c.addEventListener('change', () => setOverlay(c.dataset.ov, c.checked)));
 $('#btnMap').onclick = () => enableMap(!S.mapMode);
 $('#btnFlow').onclick = () => toggleLayer('flow', 'vis');   // 動線體檢 is a toggleable layer (also in the object tree)
+$('#btnMetes').onclick = openMetesModal;
 $('#btnCloud').onclick = openCloudModal;
 $('#panelToggle').onclick = () => { const open = $('#panel').classList.toggle('open'); $('#panelToggle').innerHTML = open ? '✕ 收起面板' : '⚙ 參數'; };
 $('#addrGo').onclick = () => geocode($('#addrInput').value);
@@ -2565,6 +2566,36 @@ $('#edgeSbInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.
 
 /* ------------------- modal: generative options + compare ----------------- */
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// METES & BOUNDS: trace a survey description (quadrant bearing + distance per line) into a boundary polygon.
+function parseMetes(text) {
+  const pts = [{ x: 0, y: 0 }];
+  for (const ln of String(text).split(/\n/)) {
+    const m = ln.match(/([NS])\s*([\d.]+)(?:[°\s]+([\d.]+)\s*['′]?)?\s*([EW])[\s,]+([\d.]+)/i);
+    if (!m) continue;
+    const ns = m[1].toUpperCase(), deg = +m[2] + (m[3] ? +m[3] / 60 : 0), ew = m[4].toUpperCase(), dist = +m[5];
+    const h = ns === 'N' ? (ew === 'E' ? deg : 360 - deg) : (ew === 'E' ? 180 - deg : 180 + deg);   // heading CW from north
+    const r = h * Math.PI / 180, last = pts[pts.length - 1];
+    pts.push({ x: last.x + dist * Math.sin(r), y: last.y + dist * Math.cos(r) });                    // north = +y
+  }
+  if (pts.length > 2) { const a = pts[0], b = pts[pts.length - 1]; if (Math.hypot(a.x - b.x, a.y - b.y) < 1) pts.pop(); }   // closes back to start
+  return pts;
+}
+function openMetesModal() {
+  openModal('📐 測量描述 Metes & Bounds', `
+    <div class="hint" style="margin-bottom:6px">每行一段：方位角 + 距離（呎）。例：<code>N45E 120</code>、<code>S 30°15' W 80.5</code>。從起點順描述自動接成地界。</div>
+    <textarea id="mbText" style="width:100%;height:148px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:8px;font-size:13px;font-family:monospace" placeholder="N 45 E 120&#10;S 45 E 100&#10;S 45 W 120&#10;N 45 W 100"></textarea>
+    <button class="btn primary" id="mbGen" style="width:100%;justify-content:center;margin-top:8px">依描述產生地界</button>
+    <div class="hint" id="mbErr" style="color:#fca5a5;margin-top:6px"></div>`);
+  $('#mbGen').onclick = () => {
+    const pts = parseMetes($('#mbText').value);
+    if (pts.length < 3) { $('#mbErr').textContent = '至少 3 段才能組成地界（格式：N45E 100，每行一段）。'; return; }
+    S.site = null; S.solution = null; S.boundary = pts; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = [];
+    S.entrances = [{ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, type: 'inout' }];
+    closeModal(); fitView(); commit();
+    toast(`已依測量描述產生 ${pts.length} 角地界`);
+    if (S.mode === 'site') doSolveSite(); else if (S.solution !== null) doSolve();
+  };
+}
 function openModal(title, html) { $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html; $('#modal').classList.add('show'); }
 function closeModal() { $('#modal').classList.remove('show'); }
 $('#modalClose').onclick = closeModal;
