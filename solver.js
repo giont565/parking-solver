@@ -357,6 +357,13 @@ function assignTypes(sol, opts) {
     const idx = Math.floor(i * pool.length / Math.max(evN, 1));
     if (pool[idx].type === 'standard') pool[idx].type = 'ev';
   }
+  // MOTORCYCLE — spread across the remaining standard stalls (rendered as a smaller stall)
+  const motoN = Math.round(total * (opts.motoPct || 0) / 100);
+  const pool2 = sol.stalls.filter(s => s.type === 'standard');
+  for (let i = 0; i < motoN && i < pool2.length; i++) {
+    const idx = Math.floor(i * pool2.length / Math.max(motoN, 1));
+    if (pool2[idx].type === 'standard') pool2[idx].type = 'moto';
+  }
 
   // ADA access aisles — each accessible stall pairs with a 5ft striped access
   // aisle, taken from the nearest ordinary stall (an ADA pair occupies 2 slots).
@@ -968,7 +975,7 @@ function solve(input) {
 
   assignTypes(best, {
     adaMode: input.opts.adaMode, adaManual: input.opts.adaManual,
-    evPct: input.opts.evPct, compactPct: input.opts.compactPct, focus,
+    evPct: input.opts.evPct, compactPct: input.opts.compactPct, motoPct: input.opts.motoPct, focus,
   });
 
   // metrics

@@ -21,7 +21,7 @@ const S = {
   solution: null,          // result from PS.solve
   tool: 'select',
   params: { angle: 90, stallW: 9, stallD: 18, aisle: 24, setback: 5, orient: 'auto', height: 35, oneway: false, greenBuffer: 0, maxRun: 0, maxRunGap: 9, compactW: 7.5, access: 'multi' },
-  opts: { adaMode: 'code', adaManual: 4, evPct: 8, compactPct: 0, gfa: 0 },
+  opts: { adaMode: 'code', adaManual: 4, evPct: 8, compactPct: 0, motoPct: 0, gfa: 0 },
   view: { scale: 1, ox: 0, oy: 0 },          // px per foot, offset px
   is3d: false, iso: { cx: 0, cy: 0 },        // isometric massing view
   mapMode: false, map: null,                 // Leaflet real-world map base
@@ -50,9 +50,9 @@ const S = {
 };
 
 const COLORS = {
-  standard:'#3b82f6', compact:'#22c55e', ada:'#1d4ed8', ev:'#10b981', trailer:'#f59e0b',
+  standard:'#3b82f6', compact:'#22c55e', ada:'#1d4ed8', ev:'#10b981', trailer:'#f59e0b', moto:'#a855f7',
 };
-const LABELS = { standard:'標準 Standard', compact:'小型 Compact', ada:'♿ 無障礙 ADA', ev:'⚡ EV 充電', trailer:'拖車 Trailer' };
+const LABELS = { standard:'標準 Standard', compact:'小型 Compact', ada:'♿ 無障礙 ADA', ev:'⚡ EV 充電', trailer:'拖車 Trailer', moto:'🏍️ 機車 Motorcycle' };
 // object-tree eye/lock capabilities per category (site can't be hidden, trees can't be locked)
 const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1} };
 // beds / baths per unit type (for DU/AC · Beds · Baths tabulation)
@@ -517,9 +517,9 @@ function fillVoids(outer, voids, fill, stroke, lw) {
 }
 
 function drawStall(s) {
-  // compact stalls are now packed at a narrower width, so the footprint is already
-  // physically smaller — no extra visual inset needed.
-  pathPoly(s.poly, true);
+  // compact stalls are physically packed narrower already; a motorcycle stall is a small stall, drawn inset.
+  const poly = s.type === 'moto' ? s.poly.map(p => ({ x: p.x + (s.cx - p.x) * 0.42, y: p.y + (s.cy - p.y) * 0.42 })) : s.poly;
+  pathPoly(poly, true);
   const col = COLORS[s.type] || COLORS.standard;
   ctx.fillStyle = hexA(col, .8); ctx.fill();
   ctx.lineWidth = 1; ctx.strokeStyle = hexA(col, 1); ctx.stroke();
@@ -529,7 +529,7 @@ function drawStall(s) {
     const c = toScreen({ x: s.cx, y: s.cy });
     ctx.fillStyle = '#fff'; ctx.font = `${Math.min(sizePx * .55, 13)}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const ic = s.type === 'ada' ? '♿' : s.type === 'ev' ? '⚡' : s.type === 'compact' ? 'c' : '◧';
+    const ic = s.type === 'ada' ? '♿' : s.type === 'ev' ? '⚡' : s.type === 'compact' ? 'c' : s.type === 'moto' ? 'M' : '◧';
     ctx.fillText(ic, c.x, c.y);
   }
 }
@@ -1433,6 +1433,7 @@ function readParams() {
   S.opts.adaManual = +$('#adaManual').value;
   S.opts.evPct = +$('#pEV').value;
   S.opts.compactPct = +$('#pCompact').value;
+  S.opts.motoPct = $('#pMoto') ? +$('#pMoto').value : 0;
   S.opts.gfa = U.Ar(+$('#pGFA').value);
   S.opts.target = +$('#pTarget').value;
 }
@@ -1498,7 +1499,7 @@ function updateMetrics() {
   // breakdown
   const bd = $('#breakdown'); bd.innerHTML = '';
   let any = false;
-  for (const k of ['standard','compact','ev','ada','trailer']) {
+  for (const k of ['standard','compact','ev','ada','moto','trailer']) {
     if (!counts[k]) continue; any = true;
     const row = document.createElement('div'); row.className = 'brow';
     row.innerHTML = `<span class="sw" style="background:${COLORS[k]}"></span>
@@ -1531,7 +1532,7 @@ function updateMetrics() {
 function buildLegend() {
   const L = $('#legend'); L.innerHTML = '';
   const items = [
-    ['standard','標準'], ['compact','小型'], ['ev','EV'], ['ada','ADA'], ['trailer','拖車'],
+    ['standard','標準'], ['compact','小型'], ['ev','EV'], ['ada','ADA'], ['moto','機車'], ['trailer','拖車'],
   ];
   for (const [k, n] of items) {
     const it = document.createElement('span'); it.className = 'it';
@@ -1985,7 +1986,7 @@ document.querySelectorAll('#maxRunSeg button').forEach(b => b.onclick = () => {
 $('#pTarget').addEventListener('input', () => { readParams(); updateMetrics(); draw(); });
 // live params -> re-solve on change (cheap enough)
 ['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { if (S.solution) doSolve(); }));
-['#pEV','#adaManual','#pGFA'].forEach(s => $(s).addEventListener('input', () => { readParams(); if (S.solution) { reassign(); } updateMetrics(); draw(); }));
+['#pEV','#pMoto','#adaManual','#pGFA'].forEach(s => $(s).addEventListener('input', () => { readParams(); if (S.solution) { reassign(); } updateMetrics(); draw(); }));
 // Compact %/width change the PACKING (narrower stalls fit more), so re-solve, not just reassign
 $('#pCompact').addEventListener('change', () => { readParams(); if (S.solution) doSolve(); });
 $('#cW').addEventListener('change', () => { readParams(); if (S.solution) doSolve(); });
@@ -2012,7 +2013,7 @@ function reassign() {
   if (S.buildings.length) focus = PS.centroid(bPoly(S.buildings[0]));
   PS.assignTypes(S.solution, {
     adaMode: S.opts.adaMode, adaManual: S.opts.adaManual,
-    evPct: S.opts.evPct, compactPct: S.opts.compactPct, focus,
+    evPct: S.opts.evPct, compactPct: S.opts.compactPct, motoPct: S.opts.motoPct, focus,
   });
 }
 
@@ -2859,12 +2860,12 @@ function getPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY)
 function setPresets(a) { localStorage.setItem(PRESET_KEY, JSON.stringify(a)); renderPresets(); }
 function capturePreset() {
   const o = { unit: U.sys, angle: S.params.angle, oneway: S.params.oneway, site: getSiteForm() };
-  ['pW', 'pD', 'pA', 'pS', 'pH', 'pOrient', 'adaMode', 'adaManual', 'pEV', 'pCompact', 'pTarget'].forEach(id => o[id] = $('#' + id).value);
+  ['pW', 'pD', 'pA', 'pS', 'pH', 'pOrient', 'adaMode', 'adaManual', 'pEV', 'pCompact', 'pMoto', 'pTarget'].forEach(id => o[id] = $('#' + id).value);
   return o;
 }
 function applyPreset(p) {
   if (p.unit) setUnitSystem(p.unit);
-  ['pW', 'pD', 'pA', 'pS', 'pH', 'pOrient', 'adaMode', 'adaManual', 'pEV', 'pCompact', 'pTarget'].forEach(id => { if (p[id] != null) $('#' + id).value = p[id]; });
+  ['pW', 'pD', 'pA', 'pS', 'pH', 'pOrient', 'adaMode', 'adaManual', 'pEV', 'pCompact', 'pMoto', 'pTarget'].forEach(id => { if (p[id] != null) $('#' + id).value = p[id]; });
   S.params.angle = p.angle || 90; S.params.oneway = !!p.oneway;
   document.querySelectorAll('#angleSeg button').forEach(b => b.classList.toggle('active', +b.dataset.ang === S.params.angle));
   document.querySelectorAll('#onewaySeg button').forEach(b => b.classList.toggle('active', (b.dataset.ow === '1') === S.params.oneway));
