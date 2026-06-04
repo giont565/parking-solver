@@ -254,9 +254,13 @@ function packAtAngle(theta, ctx) {
   // sweep vertical phases. f=0 is the original bottom-aligned grid, so the kept result can
   // never pack FEWER than before — a shifted phase only ever ADDS the odd row it happens to fit.
   let bestPack = null;
-  for (let f = 0; f < 1; f += 0.2) {
-    const res = attempt(bb.minY - f * M);
-    if (!bestPack || res.stalls.length > bestPack.stalls.length) bestPack = res;
+  if (p.gridShift != null && isFinite(p.gridShift)) {            // user dragged the grid → honour a fixed phase (wrapped to one module)
+    bestPack = attempt(bb.minY - (((p.gridShift % M) + M) % M));
+  } else {
+    for (let f = 0; f < 1; f += 0.2) {
+      const res = attempt(bb.minY - f * M);
+      if (!bestPack || res.stalls.length > bestPack.stalls.length) bestPack = res;
+    }
   }
   const stalls = bestPack.stalls, aisles = bestPack.aisles;
 
@@ -931,6 +935,7 @@ function solve(input) {
     maxRunGap: input.params.maxRunGap || 0,
     compactPct: input.opts ? (input.opts.compactPct || 0) : 0,   // share of each row packed as compact
     compactW: input.params.compactW || 0,                        // compact stall width (0 → auto 0.83×)
+    gridShift: input.params.gridShift,                           // user dragged a drive aisle → fixed grid phase (else auto-scan)
   };
   const blockers = [].concat(input.buildings || [], input.obstacles || []);
   const ctx = { boundary, blockers, p, center: centroid(boundary) };
@@ -1351,6 +1356,66 @@ function towerPlate(podium, p) {
   return polyScaleAbout(podium, Math.min(Math.sqrt(target / a), 0.92), centroid(podium));
 }
 
+// UNIT FIT: physically tile real apartment-unit rectangles into a residential floor plate along
+// double-loaded corridors (a corridor + two back-to-back rows per band, mirroring the subdivision
+// row layout). Each unit's width is sized so its rectangle area ≈ its programmed size, and the unit
+// MIX is realised greedily (keep the placed ratio near each type's target %). Returns the per-floor
+// unit polygons in world coords, typed for colour-coded rendering — TestFit's signature "unit fit",
+// a real physical count instead of a GFA/efficiency estimate. `voids` (footprint courtyards + a wrap
+// parking core) are kept clear. Returns perFloor:0 for plates too small/thin to tile (caller falls
+// back to the estimate).
+function unitFitLayout(area, p, voids) {
+  const block = voids || [];
+  const empty = { plan: [], corridors: [], perFloor: 0, byType: {}, theta: 0 };
+  if (!area || area.length < 3) return empty;
+  const mix = (p.unitMix && p.unitMix.length) ? p.unitMix : [{ type: '1br', pct: 100, size: 750 }];
+  const sumPct = mix.reduce((s, m) => s + (m.pct || 0), 0) || 1;
+  const CORR = 5;                                            // interior double-loaded corridor (ft)
+  const Du = Math.max(p.unitDepth || 30, 22);               // standard apartment depth
+  // orient to the plate's longest edge: r = along it (corridors run this way), q = depth
+  let th = 0, best = -1;
+  for (let i = 0; i < area.length; i++) { const a = area[i], b = area[(i + 1) % area.length]; const Le = Math.hypot(b.x - a.x, b.y - a.y); if (Le > best) { best = Le; th = Math.atan2(b.y - a.y, b.x - a.x); } }
+  const c = centroid(area);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const el = area.map(pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y }));
+  const minR = Math.min(...el.map(e => e.r)), maxR = Math.max(...el.map(e => e.r));
+  const minQ = Math.min(...el.map(e => e.q)), maxQ = Math.max(...el.map(e => e.q));
+  const rect = (r0, q0, r1, q1) => [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
+  const fits = poly => poly.every(pt => pointInPoly(pt, area)) && !block.some(b => polyOverlap(poly, b));
+  const W = {}; mix.forEach(m => { W[m.type] = Math.max(10, Math.min((m.size || 700) / Du, 64)); });   // width so area ≈ size
+  const narrow = mix.reduce((a, m) => W[m.type] < W[a] ? m.type : a, mix[0].type);                      // smallest unit type
+  const types = mix.map(m => m.type), target = {}; mix.forEach(m => target[m.type] = m.pct / sumPct);
+  const placed = {}; types.forEach(t => placed[t] = 0); let total = 0;
+  const nextType = () => {                                   // greedy proportional: keep realised mix near target
+    let bt = types[0], bs = -Infinity;
+    for (const t of types) { const sc = target[t] - (total ? placed[t] / total : 0); if (sc > bs) { bs = sc; bt = t; } }
+    return bt;
+  };
+  const plan = [], corridors = [];
+  const placeRow = (q0, q1) => {                             // tile one unit row across r between depths q0..q1
+    let r = minR, guard = 0;
+    while (r + W[narrow] <= maxR + 0.5 && guard++ < 4000) {
+      let t = nextType(), w = W[t], u = rect(r, q0, r + w, q1);
+      if (!(r + w <= maxR + 0.5 && fits(u))) { t = narrow; w = W[t]; u = rect(r, q0, r + w, q1); }   // try the narrowest before stepping over a notch/void
+      if (r + w <= maxR + 0.5 && fits(u)) { plan.push({ poly: u, type: t, size: Math.round((q1 - q0) * w) }); placed[t]++; total++; r += w; }
+      else r += 8;                                           // probe past the obstruction
+    }
+  };
+  const band = 2 * Du + CORR;
+  for (let q0 = minQ; q0 + Du <= maxQ + 0.5; q0 += band) {
+    if (q0 + band <= maxQ + 0.5) {                           // full double-loaded band: row + corridor + row
+      placeRow(q0, q0 + Du);
+      corridors.push(rect(minR, q0 + Du, maxR, q0 + Du + CORR));
+      placeRow(q0 + Du + CORR, q0 + 2 * Du + CORR);
+    } else {                                                 // leftover depth → a single-loaded row
+      placeRow(q0, Math.min(q0 + Du, maxQ));
+    }
+  }
+  const byType = {}; types.forEach(t => { if (placed[t]) byType[t] = placed[t]; });
+  return { plan, corridors, perFloor: total, byType, theta: th };
+}
+
 function solveSite(input) {
   const { boundary, p } = input;
   if (!boundary || boundary.length < 3) return null;
@@ -1432,7 +1497,7 @@ function solveSite(input) {
   const keys = hotel ? Math.floor(nrsf / 450) : 0;   // hotel room count (~450 sqft/key incl. corridor + lobby + back-of-house)
 
   // 4. units (residential) or none (commercial/industrial)
-  let units = 0, unitsByType = [], densityCapped = false, subdivision = null;
+  let units = 0, unitsByType = [], densityCapped = false, subdivision = null, unitPlan = null;
   if (p.useType === 'singlefamily') {
     // TOWNHOME SUBDIVISION: real physical lot count from the row layout, not a GFA estimate
     subdivision = subdivisionLayout(envelope, p, blockers);
@@ -1442,9 +1507,22 @@ function solveSite(input) {
   } else if (residential) {
     const mix = p.unitMix, sumPct = mix.reduce((s, m) => s + m.pct, 0) || 1;
     const avgSize = mix.reduce((s, m) => s + m.pct * m.size, 0) / sumPct;
-    units = Math.floor(nrsf / Math.max(avgSize, 1));
+    // UNIT FIT: tile the residential plate into real units (skip garden — it lays out its own bars).
+    // A wrap's parking core + footprint courtyards are kept clear; fall back to a GFA estimate when
+    // the plate is too small/thin to tile a real layout.
+    if (!garden) {
+      const fitVoids = (footVoids || []).concat(isWrap && wrapCore ? [wrapCore] : []);
+      const uf = unitFitLayout(footprint, p, fitVoids);
+      if (uf.perFloor >= 2) { unitPlan = uf; units = uf.perFloor * resiFloors; }
+    }
+    if (!unitPlan) units = Math.floor(nrsf / Math.max(avgSize, 1));
     if (p.maxDUA > 0) { const cap = Math.floor(p.maxDUA * acres); if (units > cap) { units = cap; densityCapped = true; } }
-    unitsByType = mix.map(m => ({ type: m.type, count: Math.round(units * m.pct / sumPct), size: m.size }));
+    if (unitPlan) {                                          // type counts scaled to the (possibly DUA-capped) total
+      const ft = (unitPlan.perFloor * resiFloors) || 1;
+      unitsByType = Object.keys(unitPlan.byType).map(t => ({ type: t, count: Math.round(units * unitPlan.byType[t] * resiFloors / ft), size: (mix.find(m => m.type === t) || {}).size || 0 }));
+    } else {
+      unitsByType = mix.map(m => ({ type: m.type, count: Math.round(units * m.pct / sumPct), size: m.size }));
+    }
   }
 
   // 5. parking required vs provided (mixed-use adds the ground-floor retail demand at ~3 / 1000 SF)
@@ -1571,7 +1649,7 @@ function solveSite(input) {
   return {
     envelope, footprint, floors, height, gfa, far, coverage, nrsf, units, unitsByType,
     densityCapped, parkingRequired, parkingProvided, parkSol, acres, parcelArea, residential, fin, compliance,
-    structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision,
+    structured, parkingLevels, parkingPerFloor, structEff, garage, levelsAbove, levelsBelow, subdivision, unitPlan,
     isWrap, wrapCore, industrial, garden, parkCapped, hotel, keys, retail, datacenter, cores, coreInfo, footVoids,
     mixedUse: groundRetail ? { retailGLA, resiFloors } : null,
     tower: isTower ? { plate: footprint, podium: towerPodium, podiumLevels: levelsAbove } : null,

@@ -36,6 +36,11 @@ const S = {
   draftKind: null,         // 'boundary'|'building'|'obstacle'
   hoverWorld: null,
   dragVertex: null,        // {poly,idx} when editing
+  dragRoad: null,          // {ri,pi} dragging a road centre-line vertex, or {ri,body:true,last} moving a whole road
+  selRoad: null,           // index into roadLines of the selected/editable road
+  dragBldgVtx: null,       // {bi,pi} dragging a building footprint corner (massing footprint edit → parking re-packs)
+  selAisle: null,          // index of the selected drive aisle (manual circulation editing)
+  dragAisle: null,         // {last} dragging a drive aisle → shifts the whole parking grid (re-pack)
   panning: false, panStart: null,
   selStall: null, selBuilding: null,
   history: [], hIdx: -1, _restoring: false,   // undo / redo snapshot stack
@@ -50,6 +55,7 @@ const S = {
     trees:    { vis: true },
     flow:     { vis: false },        // 動線體檢 congestion heat-map layer (off by default)
     earthwork:{ vis: false },        // 挖填方 cut/fill gradation layer (off by default)
+    unitfit:  { vis: true },         // 戶型平面 unit-fit floor plan (on by default — the signature view)
   },
 };
 
@@ -58,19 +64,53 @@ const COLORS = {
 };
 const LABELS = { standard:'標準 Standard', compact:'小型 Compact', ada:'♿ 無障礙 ADA', ev:'⚡ EV 充電', trailer:'拖車 Trailer', moto:'🏍️ 機車 Motorcycle' };
 // object-tree eye/lock capabilities per category (site can't be hidden, trees can't be locked)
-const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1}, flow:{vis:1}, earthwork:{vis:1} };
+const LAYER_CAPS = { site:{lock:1}, parking:{vis:1,lock:1}, building:{vis:1,lock:1}, obstacle:{vis:1,lock:1}, entrance:{vis:1,lock:1}, trees:{vis:1}, flow:{vis:1}, earthwork:{vis:1}, unitfit:{vis:1} };
+// unit-fit floor-plan colours by residential type (TestFit-style colour-coded apartment units)
+const UNIT_FIT_COLORS = { studio:'#fbbf24', '1br':'#60a5fa', '2br':'#34d399', '3br':'#f472b6' };
+const UNIT_FIT_LABEL = { studio:'套房', '1br':'一房', '2br':'二房', '3br':'三房' };
 // beds / baths per unit type (for DU/AC · Beds · Baths tabulation)
 const BEDS = { studio:0, '1br':1, '2br':2, '3br':3 }, BATHS = { studio:1, '1br':1, '2br':2, '3br':2 };
 // a category is interactive only when visible AND unlocked
 function pickable(k){ const L = S.layers[k]; return !!L && L.vis !== false && !L.lock; }
 /* building model — each building carries its own appearance + void courtyards
    (tolerant of legacy raw point-array buildings from older saved files) */
-function bldgDefaults(){ return { color: '#64748b', opacity: 0.55, height: null, roof: true, voids: [] }; }
+const FLOOR_H = 11;                      // ft per floor (massing height = floors × this)
+// parking demand by use — spaces required per 1,000 SF of gross floor area (editable assumptions)
+const USE_PARK = { residential: 2.0, office: 3.3, retail: 4.0, hotel: 1.0, industrial: 0.6, datacenter: 0.3 };
+const USE_LABEL = { residential: '住宅', office: '辦公', retail: '零售', hotel: '旅館', industrial: '工業/倉儲', datacenter: '資料中心' };
+function bldgDefaults(){ return { color: '#64748b', opacity: 0.55, height: null, roof: true, voids: [], use: 'office', floors: 1 }; }
+function bGFA(b){ return (PS.polyArea(b.poly) - (b.voids || []).reduce((t, v) => t + PS.polyArea(v), 0)) * Math.max(1, b.floors || 1); }   // gross floor area (ft²)
+function bRequired(b){ return Math.ceil(bGFA(b) / 1000 * (USE_PARK[b.use] || 3)); }    // parking spaces this massing demands
+function parkingDemand(){ return (S.buildings || []).reduce((s, b) => s + bRequired(b), 0); }   // total required across all massing
+function readFin(){ return { landCost:+$('#fLand').value||0, hardCost:+$('#fHard').value||0, softPct:+$('#fSoft').value||0,
+  rentMo:+$('#fRentMo').value||0, rentSfYr:+$('#fRentSf').value||0, opexPct:+$('#fOpex').value||0,
+  rentGrowth:+$('#fGrowth').value||0, holdYears:+$('#fHold').value||5, exitCap:+$('#fExitCap').value||0 }; }
+function massingFinancials(){   // pro-forma from the drawn massing (parking mode) — reuses the solver's computeFinancials
+  const gfa = (S.buildings || []).reduce((s, b) => s + bGFA(b), 0);
+  if (!(gfa > 0)) return null;
+  const resiGFA = (S.buildings || []).filter(b => b.use === 'residential').reduce((s, b) => s + bGFA(b), 0);
+  const residential = resiGFA > gfa * 0.5, eff = 0.82;
+  return PS.computeFinancials(readFin(), { gfa, nrsf: gfa * eff, units: Math.round(resiGFA * eff / 850), residential });
+}
+function updateFinancials(){    // refresh the pro-forma readout (massing-driven in parking mode, site solve in site mode)
+  const el = $('#finReadout'); if (!el) return;
+  const fin = (S.mode === 'site') ? (S.site && S.site.fin) : massingFinancials();
+  if (!fin || !(fin.totalCost > 0)) { el.textContent = S.mode === 'site' ? '按「自動配置建案」後顯示財務' : '畫建築量體＋設定參數後自動試算開發財務'; return; }
+  el.innerHTML = `總開發成本 <b style="color:#e2e8f0">$${Math.round(fin.totalCost).toLocaleString()}</b>　·　年 NOI <b style="color:#e2e8f0">$${Math.round(fin.noi).toLocaleString()}</b><br>殖利率 Yield <b style="color:#4ade80">${fin.yieldOnCost.toFixed(1)}%</b>${fin.irr != null ? `　·　IRR <b style="color:#4ade80">${fin.irr.toFixed(1)}%</b>` : ''}`;
+}
 function makeBuilding(poly){ return Object.assign({ poly }, bldgDefaults()); }
 function bPoly(b){ return Array.isArray(b) ? b : b.poly; }                 // footprint points
 function bPolys(){ return S.buildings.map(bPoly); }                        // for the solver (needs raw polys)
-function bHeight(b){ return (b && b.height != null && b.height > 0) ? b.height : S.params.height; }
-function normalizeBuildings(){ S.buildings = (S.buildings || []).map(b => Array.isArray(b) ? makeBuilding(b) : Object.assign(bldgDefaults(), b)); }
+function bHeight(b){ return (b && b.floors) ? b.floors * FLOOR_H : ((b && b.height != null && b.height > 0) ? b.height : S.params.height); }   // massing height from floor count
+function normalizeBuildings(){
+  S.buildings = (S.buildings || []).map(b => {
+    if (Array.isArray(b)) return makeBuilding(b);
+    const hadFloors = b.floors != null;
+    const nb = Object.assign(bldgDefaults(), b);
+    if (!hadFloors) nb.floors = Math.max(1, Math.round((nb.height || FLOOR_H) / FLOOR_H));   // old saves: derive floors from height
+    return nb;
+  });
+}
 function distSegPx(p, a, b) {                 // point→segment distance in screen px (edge picking)
   const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
   let t = l2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t));
@@ -118,7 +158,7 @@ const REGIONS = {
   eu: { unit: 'metric', stallW: 8.20, stallD: 16.40, aisle: 19.69, setback: 9.8,    // 2.5×5.0 m, aisle 6 m
         site: { floorH: 11.5, maxFAR: 3.0, maxHeight: 98, maxCov: 50, maxDUA: 0, sbF: 16.4, sbS: 9.8, sbR: 16.4, parkRatio: 0.8 } },
 };
-const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'bHeight', 'pGreen', 'pMaxGap', 'cW', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR'];
+const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'pGreen', 'pMaxGap', 'cW', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR'];
 const AREA_INPUTS = ['uxStudioS', 'ux1S', 'ux2S', 'ux3S', 'pGFA'];
 const LEN_LABELS = {
   pW: '車格寬 Stall W', pD: '車格深 Stall D', pA: '車道寬 Aisle', pS: '退縮 Setback', pH: '建築高度 Height',
@@ -304,6 +344,12 @@ function draw() {
     if (S.boundary.length >= 3) { pathPoly(S.boundary, true); ctx.clip(); }
     ctx.fillStyle = 'rgba(148,163,184,.24)';                        // 車道 aisle — the lane between two stall rows
     for (const a of park.aisles) { pathPoly(a.poly, true); ctx.fill(); }
+    if (S.selAisle != null && park.aisles[S.selAisle] && S.tool === 'select') {     // highlight the selected drive aisle (follows the perpendicular drag)
+      const ap = park.aisles[S.selAisle].poly, dr = S.dragAisle; let off = { x: 0, y: 0 };
+      if (dr && dr.moved && dr.per && dr.cur) { const sh = (dr.cur.x - dr.start.x) * dr.per.x + (dr.cur.y - dr.start.y) * dr.per.y; off = { x: dr.per.x * sh, y: dr.per.y * sh }; }
+      pathPoly(ap.map(p => ({ x: p.x + off.x, y: p.y + off.y })), true);
+      ctx.fillStyle = 'rgba(56,189,248,.32)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; ctx.stroke();
+    }
     // internal drive lanes — always TWO-WAY circulation (the 進/出 setting is only
     // about the gate at the boundary, NOT the direction of the internal roads).
     // Colour-code the road kinds so circulation is legible at a glance:
@@ -391,6 +437,7 @@ function draw() {
       ctx.save(); ctx.setLineDash([6, 4]); pathPoly(tw.podium, true); ctx.fillStyle = 'rgba(56,189,248,.14)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(56,189,248,.7)'; ctx.stroke(); ctx.restore();
       fillVoids(tw.plate, S.site.footVoids, 'rgba(37,99,235,.62)', '#1d4ed8', 2);
       hatch(tw.plate, '#bfdbfe', .3);
+      drawUnitPlan();
       labelPoly(tw.plate, `塔樓 ${S.site.units} 戶 · ${S.site.floors}F · 基座${tw.podiumLevels}層車庫`, '#e2e8f0');
     } else if (S.site.isWrap && S.site.wrapCore && S.site.footprint && S.site.footprint.length >= 3) {
       // WRAP: residential RING = footprint with the parking core cut out (the garage deck shows in the hole)
@@ -399,6 +446,7 @@ function draw() {
       S.site.wrapCore.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath();
       ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill('evenodd');
       ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; pathPoly(S.site.footprint, true); ctx.stroke(); pathPoly(S.site.wrapCore, true); ctx.stroke();
+      drawUnitPlan();
       labelPoly(S.site.footprint, `環繞 · ${S.site.units} 戶 · ${S.site.floors}F`, '#e2e8f0');
     } else if (S.site.industrial) {
       // WAREHOUSE: paved truck courts, 53' trailer stalls, the clear-span box, dock-door teeth
@@ -425,7 +473,10 @@ function draw() {
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
       fillVoids(S.site.footprint, S.site.footVoids, 'rgba(56,189,248,.42)', '#38bdf8', 2);
       hatch(S.site.footprint, '#bae6fd', .3);
-      const lbl = S.site.hotel ? `旅館 ${S.site.keys} 房 · ${S.site.floors}F` : `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`;
+      drawUnitPlan();
+      const lbl = S.site.hotel ? `旅館 ${S.site.keys} 房 · ${S.site.floors}F`
+        : (S.site.unitPlan ? `${S.site.units} 戶 · ${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`
+        : `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`);
       labelPoly(S.site.footprint, lbl, '#e2e8f0');
     }
     // SERVICE CORES (stairs + elevators): user-placed cores override the auto-placed one when present
@@ -448,7 +499,20 @@ function draw() {
       voids.forEach(v => { pathPoly(v, true); ctx.stroke(); }); ctx.restore();
     }
     hatch(fp, shade(col, 0.4), .2);
-    labelPoly(fp, 'BUILDING', '#e2e8f0');
+    const gfaTxt = U.metric() ? `${Math.round(U.A(bGFA(b))).toLocaleString()} m²` : `${Math.round(bGFA(b)).toLocaleString()} ft²`;
+    labelPoly(fp, `${USE_LABEL[b.use] || 'BUILDING'} · ${b.floors || 1}F · ${gfaTxt}`, '#e2e8f0');
+  }
+  // footprint corner handles in select mode — drag a corner to reshape the massing (parking re-packs on release)
+  if (S.tool === 'select' && !S.is3d && S.layers.building.vis) {
+    for (const b of S.buildings) {
+      const sel = S.selBuilding === b;
+      for (const p of b.poly) {
+        const s = toScreen(p);
+        ctx.beginPath(); ctx.arc(s.x, s.y, sel ? 5.5 : 4, 0, 6.2832);
+        ctx.fillStyle = sel ? '#fff' : 'rgba(226,232,240,.85)'; ctx.fill();
+        ctx.lineWidth = 1.4; ctx.strokeStyle = '#0f172a'; ctx.stroke();
+      }
+    }
   }
   // parking zones (user-drawn) — stalls pack only inside; show as a dashed outline so the stalls read through
   for (const z of (S.parkZones || [])) {
@@ -519,8 +583,103 @@ function bufferPolyline(pts, width) {
   }
   return rects;
 }
+// ---- road editing: roads are stored as editable centre-lines (S.roadLines); the solver gets strips (S.roads) ----
+function rebuildRoadStrips() {   // re-derive solver strips from the centre-lines — call after any road edit
+  S.roads = (S.roadLines || []).flatMap(rl => bufferPolyline(rl.line, rl.width || 24));
+}
+function roadVertexAt(w) {       // pick a road centre-line vertex near w (screen-space). Returns {ri,pi} or null
+  const m = toScreen(w);
+  for (let ri = 0; ri < (S.roadLines || []).length; ri++) {
+    const ln = S.roadLines[ri].line;
+    for (let pi = 0; pi < ln.length; pi++) { const s = toScreen(ln[pi]); if (Math.hypot(s.x - m.x, s.y - m.y) < 10) return { ri, pi }; }
+  }
+  return null;
+}
+function bldgVertexAt(w) {       // pick a building footprint corner near w (screen-space). Returns {bi,pi} or null
+  if (!S.layers.building.vis || S.layers.building.lock) return null;
+  const m = toScreen(w);
+  for (let bi = 0; bi < (S.buildings || []).length; bi++) {
+    const poly = S.buildings[bi].poly;
+    for (let pi = 0; pi < poly.length; pi++) { const s = toScreen(poly[pi]); if (Math.hypot(s.x - m.x, s.y - m.y) < 10) return { bi, pi }; }
+  }
+  return null;
+}
+function roadBodyAt(w) {         // pick a road body (a segment, away from a vertex) near w. Returns {ri} or null
+  const m = toScreen(w), o = toScreen({ x: 0, y: 0 }), u = toScreen({ x: 1, y: 0 }), sc = Math.hypot(u.x - o.x, u.y - o.y);
+  for (let ri = 0; ri < (S.roadLines || []).length; ri++) {
+    const ln = S.roadLines[ri].line, halfPx = (S.roadLines[ri].width || 24) / 2 * sc + 3;
+    for (let i = 0; i + 1 < ln.length; i++) if (distSegPx(m, toScreen(ln[i]), toScreen(ln[i + 1])) <= halfPx) return { ri };
+  }
+  return null;
+}
+// ---- manual drive-aisle editing (TestFit-style "manual mode"): select an auto aisle → remove / single-load / drag ----
+function activePark() { return S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution; }
+function aisleAt(w) {             // index of the drive aisle under world point w (active solution), or -1
+  const park = activePark(); if (!park || !park.aisles || !S.layers.parking.vis || S.layers.parking.lock) return -1;
+  for (let i = 0; i < park.aisles.length; i++) if (park.aisles[i].poly && PS.pointInPoly(w, park.aisles[i].poly)) return i;
+  return -1;
+}
+function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
+  const c = PS.centroid(poly); let dir = { x: 1, y: 0 }, best = -1;
+  for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; } }
+  return { c, per: { x: -dir.y, y: dir.x } };
+}
+function removeAisle(i) {         // delete a drive aisle + the stalls it serves (post-process on the current solution)
+  const park = activePark(); if (!park || !park.aisles[i]) return;
+  const ais = park.aisles[i].poly;
+  park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais)));   // drop stalls served by this aisle
+  park.aisles.splice(i, 1);
+  S.selAisle = null; hideAislePopup();
+  (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit();
+  toast('已移除這排車道與車位');
+}
+function singleLoadAisle(i, side) {   // keep stalls on only ONE side of the aisle (single-loaded)
+  const park = activePark(); if (!park || !park.aisles[i]) return;
+  const ais = park.aisles[i].poly, ax = aisleAxis(ais);
+  park.stalls = park.stalls.filter(s => {
+    if (!(s.aprobe && PS.pointInPoly(s.aprobe, ais))) return true;                  // not served by this aisle → keep
+    const d = (s.cx - ax.c.x) * ax.per.x + (s.cy - ax.c.y) * ax.per.y;              // signed side of the centreline
+    return side > 0 ? d >= 0 : d < 0;
+  });
+  (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit();
+  toast('已改為單邊停車');
+}
+function roadChanged() {          // re-derive strips, re-pack around the roads, and record one undo step
+  rebuildRoadStrips();
+  const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
+  resolveActive();               // doSolve/doSolveSite commit the final state themselves
+  if (!reSolve) commit();
+  draw();
+}
+const ROAD_W = { narrow: 18, std: 24, wide: 36 };   // ft — road-width presets
+function roadPopupAnchor(rl) { const ln = rl.line, mid = ln[Math.floor(ln.length / 2)] || ln[0]; return toScreen(mid); }
+function showRoadPopup(ri) {
+  const rl = S.roadLines[ri]; const el = $('#roadPopup'); if (!rl || !el) return;
+  const a = roadPopupAnchor(rl); el.style.left = a.x + 'px'; el.style.top = (a.y - 14) + 'px'; el.classList.add('show');
+  el.querySelectorAll('[data-rw]').forEach(b => b.classList.toggle('active', Math.abs((rl.width || 24) - ROAD_W[b.dataset.rw]) < 0.6));
+}
+function hideRoadPopup() { const el = $('#roadPopup'); if (el) el.classList.remove('show'); }
+function showAislePopup(i) {
+  const park = activePark(), el = $('#aislePopup'); if (!park || !park.aisles[i] || !el) return;
+  const a = toScreen(PS.centroid(park.aisles[i].poly)); el.style.left = a.x + 'px'; el.style.top = (a.y - 12) + 'px'; el.classList.add('show');
+}
+function hideAislePopup() { const el = $('#aislePopup'); if (el) el.classList.remove('show'); }
 // draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,
 // asphalt body, dashed yellow centre stripe). Round joins make bends real instead of blocky box segments.
+// UNIT FIT floor plan: colour-coded apartment-unit rectangles tiled into the residential plate
+// (2D plan view only). Corridors drawn first (light), units on top with thin white party walls.
+function drawUnitPlan() {
+  const up = S.site && S.site.unitPlan;
+  if (!up || !up.plan || !up.plan.length || !S.layers.unitfit || !S.layers.unitfit.vis || S.is3d || S.mapMode) return;
+  (up.corridors || []).forEach(c => { pathPoly(c, true); ctx.fillStyle = 'rgba(226,232,240,.55)'; ctx.fill(); });
+  ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(255,255,255,.85)';
+  for (const u of up.plan) {
+    pathPoly(u.poly, true);
+    ctx.fillStyle = UNIT_FIT_COLORS[u.type] || '#93c5fd'; ctx.globalAlpha = 0.82; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.stroke();
+  }
+}
+
 function drawRoads() {
   const lines = S.roadLines || [];
   const trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
@@ -532,6 +691,18 @@ function drawRoads() {
   ctx.setLineDash([14, 11]);
   for (const rd of lines) { trace(rd.line); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(250,204,21,.92)'; ctx.stroke(); }   // centre stripe
   ctx.restore();
+  // editable handles in select mode — a node on every centre-line vertex (drag ends to extend/shorten, mids to reshape)
+  if (S.tool === 'select' && !S.is3d) {
+    for (let ri = 0; ri < lines.length; ri++) {
+      const sel = S.selRoad === ri;
+      for (const p of lines[ri].line) {
+        const s = toScreen(p);
+        ctx.beginPath(); ctx.arc(s.x, s.y, sel ? 6 : 4.5, 0, 6.2832);
+        ctx.fillStyle = sel ? '#facc15' : 'rgba(250,204,21,.9)'; ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = '#0f172a'; ctx.stroke();
+      }
+    }
+  }
 }
 // fill a building footprint with facility/road VOIDS punched out (even-odd), so it wraps around them
 function fillVoids(outer, voids, fill, stroke, lw) {
@@ -1244,10 +1415,13 @@ cv.addEventListener('pointerdown', e => {
         const eh = entranceAt(w);
         if (eh) { S.dragEntrance = eh; S.selEntrance = eh; S.selStall = null; draw(); return; }
       }
+      { const rv = roadVertexAt(w); if (rv) { S.dragRoad = rv; S.selRoad = rv.ri; showRoadPopup(rv.ri); draw(); return; } }
       if (pickable('site')) for (let i = 0; i < S.boundary.length; i++) {
         const sp = toScreen(S.boundary[i]), m = toScreen(w);
         if (Math.hypot(sp.x - m.x, sp.y - m.y) < 9) { S.dragVertex = { idx: i }; return; }
       }
+      { const rb = roadBodyAt(w); if (rb) { S.dragRoad = { ri: rb.ri, body: true, last: w }; S.selRoad = rb.ri; showRoadPopup(rb.ri); draw(); return; } }
+      { const bv = bldgVertexAt(w); if (bv) { S.dragBldgVtx = bv; S.selBuilding = S.buildings[bv.bi]; refreshBldgPanel(); draw(); return; } }
       if (pickable('building')) for (const b of S.buildings) if (PS.pointInPoly(w, b.poly)) { S.selBuilding = b; refreshBldgPanel(); draw(); return; }
     }
     if (S.tool === 'select' || S.tool === 'pan') {
@@ -1330,13 +1504,19 @@ cv.addEventListener('pointerdown', e => {
       if (eh) { S.dragEntrance = eh; S.selEntrance = eh; S.selStall = null; draw(); return; }
     }
     S.selEntrance = null;
+    // ROAD EDIT — grab a centre-line vertex (drag the ends to extend/shorten, mid-points to reshape). Small target → before boundary.
+    { const rv = roadVertexAt(w); if (rv) { S.dragRoad = rv; S.selRoad = rv.ri; S.selStall = null; showRoadPopup(rv.ri); draw(); return; } }
     // vertex grab on boundary
     if (pickable('site')) for (let i = 0; i < S.boundary.length; i++) {
       const sp = toScreen(S.boundary[i]);
       const m = toScreen(w);
       if (Math.hypot(sp.x - m.x, sp.y - m.y) < 9) { S.dragVertex = { idx: i }; return; }
     }
-    // click a building to edit its appearance (colour / height / roof)
+    // ROAD EDIT — grab the road body to move the whole road (also selects it for the width / delete popup).
+    { const rb = roadBodyAt(w); if (rb) { S.dragRoad = { ri: rb.ri, body: true, last: w }; S.selRoad = rb.ri; S.selStall = null; showRoadPopup(rb.ri); draw(); return; } }
+    // MASSING — grab a building footprint corner to reshape it (parking re-packs on release). Small target → before body-select.
+    { const bv = bldgVertexAt(w); if (bv) { S.dragBldgVtx = bv; S.selBuilding = S.buildings[bv.bi]; S.selStall = null; refreshBldgPanel(); draw(); return; } }
+    // click a building body to select it (opens the massing panel — use / floors / appearance)
     if (pickable('building')) {
       for (const b of S.buildings) if (PS.pointInPoly(w, b.poly)) { S.selBuilding = b; S.selStall = null; refreshBldgPanel(); draw(); return; }
     }
@@ -1351,10 +1531,12 @@ cv.addEventListener('pointerdown', e => {
     // click stall to edit
     if (S.solution && pickable('parking')) {
       for (const s of S.solution.stalls) {
-        if (PS.pointInPoly(w, s.poly)) { S.selStall = s; draw(); return; }
+        if (PS.pointInPoly(w, s.poly)) { S.selStall = s; S.selAisle = null; hideAislePopup(); draw(); return; }
       }
     }
-    S.selStall = null; S.selBuilding = null; S.selEdge = null; hideEdgePopup(); draw();
+    // MANUAL CIRCULATION — click a drive aisle to select it (remove / single-load; drag it to slide the whole grid)
+    { const ai = aisleAt(w); if (ai >= 0) { const pk = activePark(); S.selAisle = ai; S.dragAisle = { start: w, per: aisleAxis(pk.aisles[ai].poly).per, moved: false }; S.selStall = null; S.selRoad = null; showAislePopup(ai); draw(); return; } }
+    S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
   }
 });
 
@@ -1382,12 +1564,58 @@ cv.addEventListener('pointermove', e => {
     S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
     draw(); return;
   }
+  if (S.dragRoad) {                                  // live-drag a road centre-line vertex, or move the whole road
+    const rl = S.roadLines[S.dragRoad.ri];
+    if (rl) {
+      if (S.dragRoad.body) { const d = { x: w.x - S.dragRoad.last.x, y: w.y - S.dragRoad.last.y }; rl.line = rl.line.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragRoad.last = w; }
+      else rl.line[S.dragRoad.pi] = snap(w);
+      rebuildRoadStrips(); draw();
+    }
+    return;
+  }
+  if (S.dragBldgVtx) {                               // live-drag a building footprint corner; parking re-packs on release
+    const b = S.buildings[S.dragBldgVtx.bi];
+    if (b) { b.poly[S.dragBldgVtx.pi] = snap(w); updateMassInfo(b); draw(); }
+    return;
+  }
+  if (S.dragAisle) {                                 // dragging a drive aisle perpendicular → preview the grid-slide
+    if (Math.hypot(w.x - S.dragAisle.start.x, w.y - S.dragAisle.start.y) > 2) S.dragAisle.moved = true;
+    S.dragAisle.cur = w; draw();
+    return;
+  }
   if (S.draft) draw();
 });
 
 window.addEventListener('pointerup', () => {
   if (S.panning) { S.panning = false; cv.style.cursor = ''; }
   if (S.mapPanning) { S.mapPanning = null; cv.style.cursor = ''; }
+  if (S.dragRoad) {                                  // road edit done → re-derive strips and re-pack around the new road
+    const ri = S.dragRoad.ri; S.dragRoad = null; rebuildRoadStrips();
+    const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
+    resolveActive();                                 // doSolve/doSolveSite commit the final state themselves
+    if (!reSolve) commit();
+    if (S.roadLines[ri]) showRoadPopup(ri); else hideRoadPopup();
+    return;
+  }
+  if (S.dragAisle) {                                 // drive-aisle drag released → slide the whole grid to the new phase, or just a click
+    const dr = S.dragAisle; S.dragAisle = null;
+    if (dr.moved && dr.per) {
+      const shift = (dr.cur.x - dr.start.x) * dr.per.x + (dr.cur.y - dr.start.y) * dr.per.y;   // perpendicular drag = grid phase shift
+      S.gridShift = (S.gridShift || 0) + shift;
+      S.selAisle = null; hideAislePopup();
+      resolveActive();                               // re-pack the whole grid at the new phase (commits)
+    } else if (S.selAisle != null) {
+      showAislePopup(S.selAisle);                    // it was a click, not a drag → keep the editor popup
+    }
+    return;
+  }
+  if (S.dragBldgVtx) {                               // footprint corner moved → re-pack parking around the new massing
+    S.dragBldgVtx = null;
+    const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
+    resolveActive();                                 // doSolve/doSolveSite commit the final state
+    if (!reSolve) { updateMetrics(); commit(); }
+    return;
+  }
   const moved = S.dragVertex || S.dragEntrance;
   const entReSolve = !!S.dragEntrance && (S.mode === 'site' ? !!S.site : !!S.solution);
   if (S.dragVertex) { S.dragVertex = null; }
@@ -1403,6 +1631,10 @@ cv.addEventListener('contextmenu', e => {
   if (S.tool === 'select' && pickable('entrance')) {
     const eh = entranceAt(w);
     if (eh) { S.entrances.splice(S.entrances.indexOf(eh), 1); S.selEntrance = null; draw(); toast('已刪除出入口'); resolveActive(); return; }
+  }
+  if (S.tool === 'select') {                       // right-click a road → delete it
+    const rh = roadVertexAt(w) || roadBodyAt(w);
+    if (rh) { S.roadLines.splice(rh.ri, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除道路'); return; }
   }
   if (S.tool === 'select' && S.solution && pickable('parking')) {
     // right click stall -> delete
@@ -1514,6 +1746,10 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (S.selEntrance) {
       S.entrances.splice(S.entrances.indexOf(S.selEntrance), 1); S.selEntrance = null; draw(); resolveActive();
+    } else if (S.selRoad != null && S.roadLines[S.selRoad]) {
+      S.roadLines.splice(S.selRoad, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除道路');
+    } else if (S.selAisle != null) {
+      removeAisle(S.selAisle);
     } else if (S.selStall && S.solution) {
       const i = S.solution.stalls.indexOf(S.selStall);
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
@@ -1534,6 +1770,7 @@ function setTool(t) {
   if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
+  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); }
   draw();
 }
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
@@ -1569,7 +1806,7 @@ function doSolve() {
     const t0 = performance.now();
     const res = PS.solve({
       boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances,
-      params: S.params, opts: S.opts,
+      params: { ...S.params, gridShift: S.gridShift }, opts: S.opts,
     });
     S.solution = res; S.selStall = null;
     $('#busy').classList.remove('show');
@@ -1602,9 +1839,9 @@ function updateMetrics() {
     ? `面積：${Math.round(U.A(siteArea)).toLocaleString()} ${U.au()} (${U.big(siteArea).toFixed(2)} ${U.bu()})` : '面積：—';
 
   refreshBldgPanel();
-  // building GFA: manual override else sum of building footprints (minus void courtyards)
+  // building GFA: manual override else sum of massing GFA (footprint × floors, minus void courtyards)
   let gfa = S.opts.gfa;
-  if (!gfa) gfa = S.buildings.reduce((s, b) => s + PS.polyArea(b.poly) - (b.voids || []).reduce((t, v) => t + PS.polyArea(v), 0), 0);
+  if (!gfa) gfa = S.buildings.reduce((s, b) => s + bGFA(b), 0);
   const ratio = U.metric() ? (gfa > 0 ? total / (U.A(gfa) / 100) : 0) : (gfa > 0 ? total / (gfa / 1000) : 0);
   $('#mRatio').textContent = (gfa > 0 && total) ? ratio.toFixed(1) : '—';
 
@@ -1615,6 +1852,18 @@ function updateMetrics() {
   // coverage = parking area / site
   const parkArea = total * moduleAreaPerStall;
   $('#mCover').textContent = (siteArea && total) ? Math.round(parkArea / siteArea * 100) + '%' : '—';
+
+  // PARKING DEMAND — the drawn massing (use × GFA) requires N spaces; show provided vs required
+  const required = parkingDemand();
+  $('#mRequired').textContent = required ? required.toLocaleString() : '—';
+  const dBadge = $('#parkDemandBadge');
+  if (required > 0) {
+    const ok = total >= required, diff = total - required;
+    dBadge.style.display = '';
+    dBadge.className = ok ? 'pass' : 'fail';
+    dBadge.textContent = ok ? `✓ 停車充足　${total} / 需 ${required}　(多 ${diff})` : `✗ 停車不足　${total} / 需 ${required}　(缺 ${-diff})`;
+  } else dBadge.style.display = 'none';
+  updateFinancials();
 
   $('#stOrient').textContent = sol ? `配置角度 ${sol.metrics.bestAngleDeg}°` : '';
 
@@ -1664,6 +1913,15 @@ function buildLegend() {
   const extra = document.createElement('span'); extra.className = 'it';
   extra.innerHTML = `<span class="sw" style="background:rgba(203,213,225,.4)"></span>車道`;
   L.appendChild(extra);
+  // residential unit-fit swatches (only when a unit plan is on screen)
+  if (S.mode === 'site' && S.site && S.site.unitPlan && S.layers.unitfit && S.layers.unitfit.vis) {
+    for (const t of ['studio', '1br', '2br', '3br']) {
+      if (!S.site.unitPlan.byType[t]) continue;
+      const it = document.createElement('span'); it.className = 'it';
+      it.innerHTML = `<span class="sw" style="background:${UNIT_FIT_COLORS[t]}"></span>${UNIT_FIT_LABEL[t]}`;
+      L.appendChild(it);
+    }
+  }
 }
 
 /* ------------------------------ schemes ---------------------------------- */
@@ -1694,9 +1952,13 @@ function renderSchemes() {
 function saveScheme() {
   readParams();
   const name = ($('#schemeName').value || '').trim() || `方案 ${getSchemes().length + 1}`;
-  const summary = S.mode === 'site'
-    ? (S.site ? `${S.site.residential ? S.site.units + ' 戶' : Math.round(S.site.gfa).toLocaleString() + ' SF'} · ${S.site.floors}F` : '建案')
-    : `${S.solution ? S.solution.stalls.length : 0} 車位 · ${S.params.angle}°`;
+  let summary;
+  if (S.mode === 'site') {
+    summary = S.site ? `${S.site.residential ? S.site.units + ' 戶' : Math.round(S.site.gfa).toLocaleString() + ' SF'} · ${S.site.floors}F` : '建案';
+  } else {
+    const stalls = S.solution ? S.solution.stalls.length : 0, req = parkingDemand(), fin = massingFinancials();
+    summary = `${stalls} 車位${req ? `/需${req}` : ''} · ${S.params.angle}°${fin && fin.yieldOnCost ? ` · Yield ${fin.yieldOnCost.toFixed(1)}%` : ''}`;
+  }
   const snap = {
     name, date: new Date().toISOString().slice(0, 10),
     mode: S.mode, summary, data: serialize(),
@@ -2004,7 +2266,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.contextBuildings = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2107,8 +2369,16 @@ document.querySelectorAll('#maxRunSeg button').forEach(b => b.onclick = () => {
 });
 // target only re-validates (no re-solve needed — it doesn't change the layout)
 $('#pTarget').addEventListener('input', () => { readParams(); updateMetrics(); draw(); });
-// live params -> re-solve on change (cheap enough)
-['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { if (S.solution) doSolve(); }));
+// live params -> re-solve on change (cheap enough). Any param tweak clears a manual grid-drag (fresh layout).
+['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { S.gridShift = null; if (S.solution) doSolve(); }));
+// CHANGE ROW AXIS — cycle the circulation direction (like TestFit's Row-axis change); the whole lot re-packs cleanly
+const ROW_AXIS = ['edge', '90', '0', 'auto'];
+$('#btnRowAxis').onclick = () => {
+  const next = ROW_AXIS[(ROW_AXIS.indexOf(String(S.params.orient)) + 1) % ROW_AXIS.length];
+  S.params.orient = next; $('#pOrient').value = next; S.gridShift = null;   // new direction → fresh grid phase
+  if (S.boundary.length < 3) { toast('請先畫出基地邊界再換動線'); return; }
+  doSolve();                                   // re-packs the whole lot around the new circulation direction (toasts the new count)
+};
 ['#pEV','#pMoto','#adaManual','#pGFA'].forEach(s => $(s).addEventListener('input', () => { readParams(); if (S.solution) { reassign(); } updateMetrics(); draw(); }));
 // Compact %/width change the PACKING (narrower stalls fit more), so re-solve, not just reassign
 $('#pCompact').addEventListener('change', () => { readParams(); if (S.solution) doSolve(); });
@@ -2237,7 +2507,7 @@ function doSolveSite() {
 }
 
 function updateSiteMetrics() {
-  S._trees = null; updateTabBar(); refreshBldgPanel();   // trees + bottom tabulation + appearance panel follow the layout
+  S._trees = null; updateTabBar(); refreshBldgPanel(); buildLegend(); updateFinancials();   // trees + tabulation + appearance + legend + pro-forma follow the layout
   const s = S.site, fmt = n => Math.round(U.A(n)).toLocaleString();
   $('#sUnits').textContent = s ? (s.residential ? s.units.toLocaleString() : '商用') : '0';
   $('#sGFA').textContent = s ? fmt(s.gfa) : '—';
@@ -2325,7 +2595,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2364,7 +2634,7 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
@@ -2419,6 +2689,12 @@ $('#sGroundRetail').addEventListener('change', () => { if (S.mode === 'site' && 
 $('#sDockType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sSubType').addEventListener('change', () => { if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
 $('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sParkAngle').value; if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); });
+// financial pro-forma inputs → live readout (parking: cheap recompute on input; site: re-solve on change so S.site.fin updates)
+['fLand', 'fHard', 'fSoft', 'fRentMo', 'fRentSf', 'fOpex', 'fGrowth', 'fHold', 'fExitCap'].forEach(id => {
+  const el = $('#' + id); if (!el) return;
+  el.addEventListener('input', () => { if (S.mode !== 'site') updateFinancials(); });
+  el.addEventListener('change', () => { if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); } else { updateFinancials(); commit(); } });
+});
 ['#eNW', '#eNE', '#eSW', '#eSE', '#ePad', '#eCutC', '#eFillC', '#eHaulC'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', computeEarthwork); });
 if ($('#ePadBal')) $('#ePadBal').onclick = () => { computeEarthwork(); $('#ePad').value = (S._ewBalance || 0).toFixed(1); computeEarthwork(); toast('整平高設為挖填平衡點（免外運）'); };
 $('#sParkType').addEventListener('change', () => {
@@ -2590,6 +2866,22 @@ $('#edgeSbReset').onclick = () => {
 };
 $('#edgeSbInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.stopPropagation(); $('#edgeSbApply').click(); } });
 
+// road editor popup — width presets + delete (acts on the selected road S.selRoad)
+$('#roadPopup').querySelectorAll('[data-rw]').forEach(b => b.onclick = () => {
+  if (S.selRoad == null || !S.roadLines[S.selRoad]) return;
+  S.roadLines[S.selRoad].width = ROAD_W[b.dataset.rw];
+  roadChanged(); showRoadPopup(S.selRoad);
+  toast('已調整道路寬度');
+});
+$('#roadDel').onclick = () => {
+  if (S.selRoad == null || !S.roadLines[S.selRoad]) return;
+  S.roadLines.splice(S.selRoad, 1); S.selRoad = null; hideRoadPopup(); roadChanged();
+  toast('已刪除道路');
+};
+// drive-aisle editor buttons (manual circulation editing)
+$('#aisleRemove').onclick = () => { if (S.selAisle != null) removeAisle(S.selAisle); };
+$('#aisleSingle').onclick = () => { if (S.selAisle != null) singleLoadAisle(S.selAisle, +1); };
+
 /* ------------------- modal: generative options + compare ----------------- */
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // METES & BOUNDS: trace a survey description (quadrant bearing + distance per line) into a boundary polygon.
@@ -2615,7 +2907,7 @@ function openMetesModal() {
   $('#mbGen').onclick = () => {
     const pts = parseMetes($('#mbText').value);
     if (pts.length < 3) { $('#mbErr').textContent = '至少 3 段才能組成地界（格式：N45E 100，每行一段）。'; return; }
-    S.site = null; S.solution = null; S.boundary = pts; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = [];
+    S.site = null; S.solution = null; S.boundary = pts; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null;
     S.entrances = [{ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, type: 'inout' }];
     closeModal(); fitView(); commit();
     toast(`已依測量描述產生 ${pts.length} 角地界`);
@@ -3073,14 +3365,23 @@ function refreshBldgPanel() {
   $('#bSel').value = S.buildings.indexOf(b);
   $('#bColor').value = b.color || '#64748b';
   $('#bOpacity').value = Math.round((b.opacity != null ? b.opacity : 0.55) * 100);
-  $('#bHeight').value = round2(U.L(b.height != null ? b.height : S.params.height));
+  $('#bUse').value = b.use || 'office';
+  $('#bFloors').value = b.floors || 1;
   document.querySelectorAll('#bRoofSeg button').forEach(x => x.classList.toggle('active', (x.dataset.r === '1') === (b.roof !== false)));
+  updateMassInfo(b);
+}
+function updateMassInfo(b) {            // live GFA + parking-demand readout for the selected massing
+  const el = $('#bMassInfo'); if (!el || !b) return;
+  const gfa = bGFA(b), req = bRequired(b);
+  const area = U.metric() ? `${Math.round(U.A(gfa)).toLocaleString()} m²` : `${Math.round(gfa).toLocaleString()} ft²`;
+  el.innerHTML = `樓地板 GFA：<b style="color:#e2e8f0">${area}</b>　(${USE_LABEL[b.use] || ''} · ${b.floors || 1} 層)<br>需要車位：<b style="color:#facc15">${req.toLocaleString()}</b> 個　(${USE_PARK[b.use] || 3}/1000SF)`;
 }
 function selectedBldg() { return S.selBuilding || S.buildings[0] || null; }
 $('#bSel').onchange = () => { S.selBuilding = S.buildings[+$('#bSel').value] || null; refreshBldgPanel(); draw(); };
 $('#bColor').oninput = () => { const b = selectedBldg(); if (b) { b.color = $('#bColor').value; draw(); } };
 $('#bOpacity').oninput = () => { const b = selectedBldg(); if (b) { b.opacity = Math.max(0.1, Math.min(1, (+$('#bOpacity').value || 55) / 100)); draw(); } };
-$('#bHeight').onchange = () => { const b = selectedBldg(); if (b) { const v = +$('#bHeight').value; b.height = v > 0 ? U.Lr(v) : null; if (S.is3d) fit3D(); draw(); commit(); } };
+$('#bUse').onchange = () => { const b = selectedBldg(); if (b) { b.use = $('#bUse').value; updateMassInfo(b); updateMetrics(); draw(); commit(); } };
+$('#bFloors').onchange = () => { const b = selectedBldg(); if (b) { b.floors = Math.max(1, Math.min(120, Math.round(+$('#bFloors').value || 1))); b.height = b.floors * FLOOR_H; updateMassInfo(b); updateMetrics(); if (S.is3d) fit3D(); draw(); commit(); } };
 $('#bColor').addEventListener('change', () => { if (selectedBldg()) commit(); });
 $('#bOpacity').addEventListener('change', () => { if (selectedBldg()) commit(); });
 document.querySelectorAll('#bRoofSeg button').forEach(btn => btn.onclick = () => {
@@ -3141,7 +3442,7 @@ function toggleLayer(key, prop) {
   }
   if (S.selEntrance && !pickable('entrance')) S.selEntrance = null;   // drop selection if it just got hidden/locked
   if (S.selStall && !pickable('parking')) S.selStall = null;
-  draw(); buildObjTree();
+  draw(); buildObjTree(); buildLegend();
 }
 function buildObjTree() {
   const body = $('#objTreeBody'); if (!body) return;
@@ -3155,6 +3456,7 @@ function buildObjTree() {
       U.big(PS.polyArea(pc)).toFixed(2) + U.bu(), () => setActiveParcel(i)));
   if (S.mode === 'site') {
     row(2, '🏢', '建築 Building', S.site ? (S.site.residential ? S.site.units + ' 戶' : S.site.floors + 'F') : '—', () => { setMode('site'); gotoGroup('開發類型'); }, 'building');
+    if (S.site && S.site.unitPlan) row(3, '🏠', '戶型平面 Units', `${S.site.unitPlan.perFloor}/層 · ${S.layers.unitfit.vis ? '顯示' : '隱藏'}`, () => toggleLayer('unitfit', 'vis'), 'unitfit');
     row(2, '🅿️', '停車 Parking', stalls, () => gotoGroup('法規 Zoning'), 'parking');
     row(2, '✅', '法規檢核', S.site ? S.site.compliance.filter(c => c.ok).length + '/' + S.site.compliance.length : '—', () => gotoGroup('法規檢核'));
   } else {

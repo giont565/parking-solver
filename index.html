@@ -23,14 +23,18 @@
     background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;}
   button{font-family:inherit;}
   /* ---- layout ---- */
-  #app{display:grid;grid-template-rows:48px 1fr 26px;grid-template-columns:1fr 320px;
+  #app{display:grid;grid-template-rows:auto 1fr 26px;grid-template-columns:1fr 340px;
     grid-template-areas:"toolbar toolbar" "canvas panel" "status status";height:100vh;}
-  #toolbar{grid-area:toolbar;display:flex;align-items:center;gap:6px;padding:0 12px;
-    background:linear-gradient(180deg,#1e293b,#172033);border-bottom:1px solid var(--line);}
+  #toolbar{grid-area:toolbar;display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:7px 14px;
+    background:linear-gradient(180deg,#1f2a3d,#141c2b);border-bottom:1px solid var(--line);
+    box-shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 6px 18px -8px rgba(0,0,0,.6);}
+  .tbrow{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;overflow-y:visible;scrollbar-width:thin;padding-bottom:1px;}
+  .tbrow::-webkit-scrollbar{height:5px;}
+  .tbrow + .tbrow{padding-top:6px;border-top:1px solid rgba(51,65,85,.4);}
   #stage{grid-area:canvas;position:relative;background:
     radial-gradient(circle at 30% 20%,#13203a,#0b1426);overflow:hidden;}
-  #panel{grid-area:panel;background:var(--panel);border-left:1px solid var(--line);
-    overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:14px;}
+  #panel{grid-area:panel;background:linear-gradient(180deg,#1e293b,#1a2536);border-left:1px solid var(--line);
+    overflow-y:auto;padding:14px 14px 22px;display:flex;flex-direction:column;gap:15px;}
   #status{grid-area:status;display:flex;align-items:center;gap:18px;padding:0 12px;
     background:#0b1426;border-top:1px solid var(--line);color:var(--muted);font-size:11px;}
   canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;z-index:2;touch-action:none;}
@@ -60,10 +64,10 @@
   #mapbar input{width:300px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);
     border-radius:6px;padding:7px 10px;font-size:12px;}
   #mapbar input:focus{outline:none;border-color:var(--accent);}
-  #mapbar .mbtn{height:32px;padding:0 12px;border:1px solid var(--line);background:var(--panel2);
+  #mapbar .mbtn{height:34px;padding:0 12px;border:1px solid var(--line);background:var(--panel2);
     color:var(--text);border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;}
   #mapbar .mbtn:hover{border-color:var(--accent);}
-  #mapbar .seg{height:32px;}
+  #mapbar .seg{height:34px;}
   #objTree{position:absolute;top:14px;left:14px;z-index:6;display:none;width:212px;
     background:rgba(15,23,42,.96);border:1px solid var(--line);border-radius:10px;overflow:hidden;
     box-shadow:0 10px 36px rgba(0,0,0,.55);backdrop-filter:blur(6px);}
@@ -113,62 +117,91 @@
   #edgePopup button{height:26px;padding:0 9px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;}
   #edgePopup button:hover{border-color:var(--warn);}
   #edgePopup button.del{color:var(--bad);}
+  #roadPopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:5px;padding:7px 9px;
+    background:rgba(15,23,42,.97);border:1px solid #facc15;border-radius:8px;
+    box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
+  #roadPopup.show{display:flex;}
+  #roadPopup .cap{font-size:10px;color:#facc15;text-align:center;font-weight:700;}
+  #roadPopup .row{display:flex;gap:4px;align-items:center;}
+  #roadPopup button{height:26px;padding:0 11px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;}
+  #roadPopup button:hover{border-color:#facc15;}
+  #roadPopup button.active{background:#facc15;color:#1a1a1a;border-color:#facc15;}
+  #roadPopup button.del{color:var(--bad);}
+  #roadPopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
+  #aislePopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:4px;padding:7px 9px;
+    background:rgba(15,23,42,.97);border:1px solid #38bdf8;border-radius:8px;
+    box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
+  #aislePopup.show{display:flex;}
+  #aislePopup .cap{font-size:10px;color:#38bdf8;text-align:center;font-weight:700;}
+  #aislePopup .row{display:flex;gap:4px;align-items:center;}
+  #aislePopup button{height:26px;padding:0 10px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;}
+  #aislePopup button:hover{border-color:#38bdf8;}
+  #aislePopup button.del{color:var(--bad);}
+  #aislePopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
 
   /* ---- toolbar ---- */
-  .brand{display:flex;align-items:center;gap:8px;margin-right:8px;font-weight:700;letter-spacing:.3px;}
-  .brand .dot{width:10px;height:10px;border-radius:3px;background:var(--accent);box-shadow:0 0 10px var(--accent);}
-  .brand small{color:var(--muted);font-weight:500;}
-  .tbar-sep{width:1px;height:26px;background:var(--line);margin:0 4px;}
-  .tool{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
-    min-width:54px;height:36px;padding:2px 6px;border:1px solid transparent;border-radius:var(--radius);
-    background:transparent;color:var(--muted);cursor:pointer;font-size:10px;transition:.12s;}
-  .tool svg{width:16px;height:16px;}
+  .brand{display:flex;align-items:center;gap:9px;margin-right:6px;font-weight:700;letter-spacing:.2px;white-space:nowrap;}
+  .brand .dot{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,#7dd3fc,var(--accent));box-shadow:0 0 12px var(--accent);}
+  .brand small{color:var(--muted);font-weight:500;font-size:11px;}
+  .tbar-sep{width:1px;height:24px;background:linear-gradient(180deg,transparent,var(--line) 22%,var(--line) 78%,transparent);margin:0 5px;flex:none;}
+  /* grouped tool palette — related buttons read as one island, not loose tiles */
+  .toolgroup{display:inline-flex;align-items:center;gap:2px;padding:3px;flex:none;
+    background:rgba(2,8,20,.42);border:1px solid rgba(51,65,85,.55);border-radius:11px;}
+  .tool{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+    min-width:47px;height:38px;padding:3px 6px;border:1px solid transparent;border-radius:8px;
+    background:transparent;color:var(--muted);cursor:pointer;font-size:10px;line-height:1;transition:background .12s,color .12s,box-shadow .12s;flex:none;}
+  .tool svg{width:17px;height:17px;}
   .tool:hover{background:var(--panel2);color:var(--text);}
-  .tool.active{background:var(--accent2);color:#001018;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;}
-  .btn{height:32px;padding:0 12px;border-radius:var(--radius);border:1px solid var(--line);
-    background:var(--panel2);color:var(--text);cursor:pointer;font-weight:600;transition:.12s;display:inline-flex;align-items:center;gap:6px;}
-  .btn:hover{border-color:var(--accent);}
-  .btn.primary{background:linear-gradient(180deg,#0ea5e9,#0284c7);border-color:#0ea5e9;color:#001018;}
-  .btn.primary:hover{filter:brightness(1.08);}
-  .btn.ghost{background:transparent;}
-  .btn:disabled{opacity:.4;cursor:not-allowed;}
-  .spacer{flex:1;}
-  .tbsel{height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--text);
-    border-radius:6px;padding:0 8px;font-size:12px;cursor:pointer;}
+  .tool.active{background:linear-gradient(180deg,#38bdf8,#0ea5e9);color:#00131f;border-color:var(--accent);
+    box-shadow:0 1px 6px -1px rgba(56,189,248,.6), 0 0 0 1px rgba(56,189,248,.5) inset;font-weight:600;}
+  .btn{height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--text);cursor:pointer;font-weight:600;transition:.12s;display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;}
+  .btn:hover{border-color:var(--accent);background:#2c3a52;}
+  .btn.primary{background:linear-gradient(180deg,#38bdf8,#0284c7);border-color:#38bdf8;color:#00131f;
+    box-shadow:0 2px 10px -2px rgba(56,189,248,.55);}
+  .btn.primary:hover{filter:brightness(1.07);}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--muted);}
+  .btn.ghost:hover{background:var(--panel2);color:var(--text);border-color:var(--line);}
+  .btn:disabled{opacity:.35;cursor:not-allowed;}
+  .spacer{flex:1;min-width:6px;}
+  .tbsel{height:34px;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:8px;padding:0 9px;font-size:12px;cursor:pointer;flex:none;}
   .tbsel:focus{outline:none;border-color:var(--accent);}
 
   /* ---- panel ---- */
-  .group{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
-  .group>h3{margin:0;padding:9px 12px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
-    color:var(--muted);background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:6px;
-    cursor:pointer;user-select:none;transition:background .12s;}
+  .group{background:var(--panel2);border:1px solid var(--line);border-radius:11px;overflow:hidden;
+    box-shadow:0 1px 0 rgba(255,255,255,.02) inset;}
+  .group>h3{margin:0;padding:11px 13px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;
+    color:var(--muted);background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;
+    cursor:pointer;user-select:none;transition:background .12s,color .12s;}
   .group>h3:hover{background:#22324a;color:var(--text);}
   .group>h3 .ico{width:13px;height:13px;color:var(--accent);}
   .group>h3 .chev{margin-left:auto;font-size:9px;color:var(--muted);transition:transform .15s;}
   .group.collapsed>h3{border-bottom:none;}
   .group.collapsed>h3 .chev{transform:rotate(-90deg);}
   .group.collapsed>.body{display:none;}
-  .group .body{padding:13px 13px;display:flex;flex-direction:column;gap:12px;}
-  .field{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:28px;}
-  .field label{color:var(--muted);font-size:12px;flex:1;line-height:1.35;}
+  .group .body{padding:14px;display:flex;flex-direction:column;gap:13px;}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px;}
+  .field label{color:var(--muted);font-size:12px;flex:1;line-height:1.4;}
   .field input[type=number],.field select,.field input[type=text]{
-    width:96px;background:#0f1a2b;border:1px solid var(--line);color:var(--text);
-    border-radius:6px;padding:6px 9px;font-size:12px;text-align:right;}
+    width:100px;background:#0d1726;border:1px solid var(--line);color:var(--text);
+    border-radius:7px;padding:7px 10px;font-size:12px;text-align:right;transition:border-color .12s,box-shadow .12s;}
   .field select{text-align:left;}
   .field input[type=text]{text-align:left;}
-  .field input:focus,.field select:focus{outline:none;border-color:var(--accent);}
-  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
-  .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:7px 0;cursor:pointer;font-size:12px;font-weight:600;}
-  .seg button.active{background:var(--accent2);color:#001018;}
+  .field input:focus,.field select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.15);}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex:none;}
+  .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:7px 0;cursor:pointer;font-size:12px;font-weight:600;transition:background .12s,color .12s;}
+  .seg button:hover{color:var(--text);}
+  .seg button.active{background:linear-gradient(180deg,#38bdf8,#0ea5e9);color:#00131f;}
   .hint{font-size:11px;color:var(--muted);line-height:1.5;}
 
   /* metrics */
-  .metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-  .metric{background:#0f1a2b;border:1px solid var(--line);border-radius:7px;padding:8px 10px;}
-  .metric .v{font-size:21px;font-weight:800;line-height:1.1;color:#fff;font-variant-numeric:tabular-nums;}
-  .metric .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:2px;}
-  .metric.big{grid-column:span 2;}
-  .metric.big .v{font-size:30px;color:var(--accent);}
+  .metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+  .metric{background:#0d1726;border:1px solid var(--line);border-radius:9px;padding:10px 12px;}
+  .metric .v{font-size:22px;font-weight:800;line-height:1.1;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
+  .metric .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:3px;}
+  .metric.big{grid-column:span 2;background:linear-gradient(135deg,#10243a,#0d1726);border-color:#1e3a52;}
+  .metric.big .v{font-size:32px;color:var(--accent);text-shadow:0 0 22px rgba(56,189,248,.35);}
   .legend{display:flex;flex-wrap:wrap;gap:6px 12px;}
   .legend .it{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);}
   .legend .sw{width:12px;height:12px;border-radius:3px;border:1px solid rgba(255,255,255,.2);}
@@ -188,6 +221,9 @@
   #complianceScore{font-size:12px;font-weight:700;margin-bottom:8px;padding:6px 10px;border-radius:6px;text-align:center;}
   #complianceScore.pass{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid var(--good);}
   #complianceScore.fail{background:rgba(239,68,68,.15);color:#f87171;border:1px solid var(--bad);}
+  #parkDemandBadge{font-size:12px;font-weight:700;margin:2px 0 4px;padding:7px 10px;border-radius:7px;text-align:center;}
+  #parkDemandBadge.pass{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid var(--good);}
+  #parkDemandBadge.fail{background:rgba(239,68,68,.15);color:#f87171;border:1px solid var(--bad);}
   #targetBadge{font-size:12px;font-weight:700;margin-top:6px;padding:6px 10px;border-radius:6px;text-align:center;}
   #targetBadge.pass{background:rgba(34,197,94,.15);color:#4ade80;border:1px solid var(--good);}
   #targetBadge.fail{background:rgba(239,68,68,.15);color:#f87171;border:1px solid var(--bad);}
@@ -235,7 +271,7 @@
     background:rgba(15,23,42,.95);border:1px solid var(--line);border-radius:9px;
     box-shadow:0 8px 28px rgba(0,0,0,.5);backdrop-filter:blur(6px);overflow:hidden;max-width:calc(100% - 120px);}
   #tabBar.show{display:flex;}
-  #tabBar .col{padding:8px 14px;border-right:1px solid var(--line);min-width:96px;}
+  #tabBar .col{padding:9px 16px;border-right:1px solid var(--line);min-width:98px;}
   #tabBar .col:last-child{border-right:none;}
   #tabBar .col h5{margin:0 0 5px;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);font-weight:800;}
   #tabBar .kv{display:flex;justify-content:space-between;gap:12px;font-size:11px;line-height:1.7;}
@@ -283,8 +319,9 @@
 <div id="app">
   <!-- ===================== TOOLBAR ===================== -->
   <div id="toolbar">
+   <div class="tbrow">
     <div class="brand"><span class="dot"></span>TestFit Clone <small>v2.0</small></div>
-    <div class="seg" id="modeSeg" style="width:158px;height:32px;">
+    <div class="seg" id="modeSeg" style="width:158px;height:34px;">
       <button data-mode="parking" class="active">🅿️ 停車場</button>
       <button data-mode="site">🏢 建案</button>
     </div>
@@ -292,6 +329,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h8M3 12h13M3 19h8M16 5h5M19 12h2M16 19h5"/></svg>物件</button>
     <div class="tbar-sep"></div>
 
+    <div class="toolgroup">
     <button class="tool" data-tool="select" title="選取 / 編輯 (V)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-6 1 3 6-3 1-3-6-5 4z"/></svg>選取</button>
     <button class="tool" data-tool="boundary" title="畫基地邊界 (B)">
@@ -316,8 +354,22 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
     <button class="tool" data-tool="pan" title="平移畫面 (空白鍵拖曳)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11V5a2 2 0 014 0v6m0-3a2 2 0 014 0v5a6 6 0 01-6 6h-1a6 6 0 01-5-3l-2.5-4a1.5 1.5 0 012.6-1.5L11 13"/></svg>平移</button>
+    </div>
+    <div class="spacer"></div>
+    <select id="regionSel" class="tbsel" title="法規地區（可編輯參考預設）">
+      <option value="us">🇺🇸 美規</option>
+      <option value="tw">🇹🇼 台灣</option>
+      <option value="jp">🇯🇵 日本</option>
+      <option value="eu">🇪🇺 歐洲</option>
+    </select>
+    <div class="seg" id="unitSeg" style="width:74px;height:34px;">
+      <button data-u="imperial" class="active">ft</button>
+      <button data-u="metric">m</button>
+    </div>
+    <button class="btn ghost" id="btnHelp" title="說明">?</button>
+   </div>
 
-    <div class="tbar-sep"></div>
+   <div class="tbrow">
     <button class="btn primary" id="btnSolve"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>自動排車位</button>
     <button class="btn" id="btnGenerate" title="自動試多組參數、依車位數/Yield 排名出多個方案"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l1.5 4L11 8 6.5 9.5 5 14l-1.5-4.5L-1 8l4.5-1zM18 10l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg>產生方案</button>
     <button class="btn" id="btnOptimize" title="自動搜尋能達到目標車位的最佳配置（不夠才動用斜停/單向）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.6" fill="currentColor"/></svg>自動達標</button>
@@ -327,32 +379,20 @@
     <button class="btn ghost" id="btnUndo" title="復原 Undo (⌘Z)" disabled>↶</button>
     <button class="btn ghost" id="btnRedo" title="重做 Redo (⌘⇧Z)" disabled>↷</button>
 
-    <div class="tbar-sep"></div>
-    <div class="seg" id="viewSeg" style="width:104px;height:32px;">
+    <div class="spacer"></div>
+    <div class="seg" id="viewSeg" style="width:104px;height:34px;">
       <button data-view="2d" class="active">2D</button>
       <button data-view="3d">3D 量體</button>
     </div>
-    <button class="tool" id="btnMap" title="真實地圖底圖（衛星/街道，免費）" style="margin-left:4px;">
+    <div class="toolgroup">
+    <button class="tool" id="btnMap" title="真實地圖底圖（衛星/街道，免費）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>地圖</button>
-    <button class="tool" id="btnMetes" title="依測量描述（方位角+距離 metes & bounds）自動畫地界" style="margin-left:4px;">📐 測量</button>
-    <button class="tool" id="btnContext" title="載入地圖周邊既有建物（OSM 免費）→ 3D 模式顯示既有環境 context" style="margin-left:4px;">🏙️ 周邊建物</button>
-    <button class="tool" id="btnFlow" title="動線體檢：車流熱點（紅=塞、綠=順）+ 死巷/單一進出問題標示" style="margin-left:4px;">🚦 動線體檢</button>
-    <button class="tool" id="btnCloud" title="雲端：登入後存方案、跨裝置開啟、產生分享連結" style="margin-left:4px;">☁️ 雲端</button>
-
-    <div class="tbar-sep"></div>
-    <select id="regionSel" class="tbsel" title="法規地區（可編輯參考預設）">
-      <option value="us">🇺🇸 美規</option>
-      <option value="tw">🇹🇼 台灣</option>
-      <option value="jp">🇯🇵 日本</option>
-      <option value="eu">🇪🇺 歐洲</option>
-    </select>
-    <div class="seg" id="unitSeg" style="width:74px;height:32px;">
-      <button data-u="imperial" class="active">ft</button>
-      <button data-u="metric">m</button>
+    <button class="tool" id="btnMetes" title="依測量描述（方位角+距離 metes & bounds）自動畫地界">📐 測量</button>
+    <button class="tool" id="btnContext" title="載入地圖周邊既有建物（OSM 免費）→ 3D 模式顯示既有環境 context">🏙️ 周邊建物</button>
+    <button class="tool" id="btnFlow" title="動線體檢：車流熱點（紅=塞、綠=順）+ 死巷/單一進出問題標示">🚦 動線體檢</button>
+    <button class="tool" id="btnCloud" title="雲端：登入後存方案、跨裝置開啟、產生分享連結">☁️ 雲端</button>
     </div>
-
-    <div class="spacer"></div>
-    <button class="btn ghost" id="btnHelp" title="說明">?</button>
+   </div>
   </div>
 
   <!-- ===================== STAGE ===================== -->
@@ -439,6 +479,27 @@
         <button id="edgeSbReset" class="del" title="恢復自動退縮">↺</button>
       </div>
     </div>
+
+    <!-- road editor (select mode — click or drag a road to set width / delete) -->
+    <div id="roadPopup">
+      <div class="cap">道路寬度</div>
+      <div class="row">
+        <button data-rw="narrow" title="窄路 ≈5.5m">窄</button>
+        <button data-rw="std" title="標準雙向 ≈7.3m">標準</button>
+        <button data-rw="wide" title="寬路 ≈11m">寬</button>
+        <button class="del" id="roadDel" title="刪除這條路">✕</button>
+      </div>
+    </div>
+
+    <!-- drive-aisle editor (select mode — click an auto drive aisle; drag it to slide the parking grid) -->
+    <div id="aislePopup">
+      <div class="cap">這排車道</div>
+      <div class="row">
+        <button id="aisleSingle" title="只停單邊（移除一側的車位）">單邊停</button>
+        <button id="aisleRemove" class="del" title="移除這排車道與車位">移除這排</button>
+      </div>
+      <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">↕ 拖曳這排可平移整個停車格網</div>
+    </div>
   </div>
 
   <!-- ===================== PANEL ===================== -->
@@ -450,11 +511,13 @@
         <div id="metricsParking">
           <div class="metrics">
             <div class="metric big"><div class="v" id="mTotal">0</div><div class="l">總車位數 Total Stalls</div></div>
+            <div class="metric"><div class="v" id="mRequired">—</div><div class="l">量體需求 Required</div></div>
             <div class="metric"><div class="v" id="mRatio">—</div><div class="l">車位比 /1000 SF</div></div>
             <div class="metric"><div class="v" id="mEff">—</div><div class="l">SF / 車位</div></div>
             <div class="metric"><div class="v" id="mArea">—</div><div class="l">基地面積 (ac)</div></div>
             <div class="metric"><div class="v" id="mCover">—</div><div class="l">停車覆蓋率</div></div>
           </div>
+          <div id="parkDemandBadge" style="display:none;"></div>
           <div class="breakdown" id="breakdown"></div>
         </div>
         <div id="metricsSite" style="display:none;">
@@ -510,7 +573,8 @@
             <option value="edge">沿最長邊（最整齊）</option>
           </select>
         </div>
-        <div class="hint">「自動最佳」試多個角度挑車位最多者；「沿最長邊」最整齊、貼合基地。</div>
+        <button class="btn" id="btnRowAxis" style="justify-content:center;">🔄 換動線排法（一鍵換車道方向）</button>
+        <div class="hint">想調整停車場動線時：按「換動線排法」一鍵循環不同車道方向（＝ TestFit 的 Row&nbsp;Axis），整場車位自動跟著重排、挑你順眼的；車道寬度在上面調。</div>
       </div>
     </div>
 
@@ -661,22 +725,6 @@
       </div>
 
       <div class="group">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>財務 Pro-forma <span style="margin-left:auto;font-size:9px;color:var(--muted);">選填</span></h3>
-        <div class="body">
-          <div class="field"><label>土地成本 Land ($)</label><input type="number" id="fLand" value="4000000" step="100000" min="0"></div>
-          <div class="field"><label>營造單價 Hard ($/SF)</label><input type="number" id="fHard" value="180" step="5" min="0"></div>
-          <div class="field"><label>軟成本 Soft (%)</label><input type="number" id="fSoft" value="20" step="1" min="0"></div>
-          <div class="field" id="fRentResiRow"><label>月租 Rent ($/戶/月)</label><input type="number" id="fRentMo" value="1800" step="50" min="0"></div>
-          <div class="field" id="fRentCommRow" style="display:none;"><label>租金 Rent ($/SF/年)</label><input type="number" id="fRentSf" value="28" step="1" min="0"></div>
-          <div class="field"><label>營運費率 OpEx (%)</label><input type="number" id="fOpex" value="35" step="1" min="0" max="90"></div>
-          <div class="field"><label>租金成長 Growth (%/yr)</label><input type="number" id="fGrowth" value="3" step="0.5" min="0" max="20"></div>
-          <div class="field"><label>持有年數 Hold (yr)</label><input type="number" id="fHold" value="5" step="1" min="1" max="30"></div>
-          <div class="field"><label>退場 Exit cap (%)</label><input type="number" id="fExitCap" value="5.5" step="0.25" min="2" max="15"></div>
-          <div class="hint">IRR／退場價值／權益倍數／敏感度在「數量計算」報表內。</div>
-        </div>
-      </div>
-
-      <div class="group">
         <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 20h18M5 20V10l4-3 4 3 6-4v14"/></svg>挖填方 Cut &amp; Fill <span style="margin-left:auto;font-size:9px;color:var(--muted);">選填</span></h3>
         <div class="body">
           <div class="field" style="font-size:10px;color:var(--muted);">基地四角現況標高（ft）</div>
@@ -700,17 +748,46 @@
 
     <!-- ============ BUILDING APPEARANCE (both modes, when buildings exist) ============ -->
     <div class="group" id="grpBldg" style="display:none;">
-      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築外觀 Appearance</h3>
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築量體 Massing</h3>
       <div class="body">
         <div class="field"><label>選擇建築 Building</label><select id="bSel" style="width:140px;"></select></div>
+        <div class="field"><label>用途 Use</label>
+          <select id="bUse" style="width:140px;">
+            <option value="residential">住宅 Residential</option>
+            <option value="office" selected>辦公 Office</option>
+            <option value="retail">零售 Retail</option>
+            <option value="hotel">旅館 Hotel</option>
+            <option value="industrial">工業/倉儲 Industrial</option>
+            <option value="datacenter">資料中心 Data Center</option>
+          </select>
+        </div>
+        <div class="field"><label>樓層 Floors</label><input type="number" id="bFloors" value="1" min="1" max="120" step="1"></div>
+        <div id="bMassInfo" style="font-size:11.5px;color:var(--muted);background:#0d1726;border:1px solid var(--line);border-radius:7px;padding:8px 10px;line-height:1.7;"></div>
         <div class="field"><label>顏色 Colour</label><input type="color" id="bColor" value="#64748b" style="width:54px;height:30px;padding:2px;"></div>
         <div class="field"><label>透明度 Opacity (%)</label><input type="number" id="bOpacity" value="55" min="10" max="100" step="5"></div>
-        <div class="field"><label>建築高度 Height (ft)</label><input type="number" id="bHeight" value="35" min="8" max="800" step="1"></div>
         <div class="field"><label>🏠 屋頂 Roof</label>
           <div class="seg" id="bRoofSeg" style="width:140px;"><button data-r="1" class="active">有頂</button><button data-r="0">開放(無頂)</button></div>
         </div>
         <button class="btn" id="bDelete" style="justify-content:center;">🗑️ 刪除此建築</button>
-        <div class="hint">用「建築」工具在現有建築裡再畫一個小框 → 自動變成中庭 Void。切到「3D 量體」看立體效果與屋頂開孔。</div>
+        <div class="hint">給建築設定用途＋樓層，會自動算出樓地板與「需要幾個車位」（上方即時數據顯示夠不夠）。選取模式可拖建築的角調 footprint。切「3D 量體」看立體。</div>
+      </div>
+    </div>
+
+    <!-- financial pro-forma — driven by the drawn massing; shown in BOTH parking & site modes -->
+    <div class="group" id="grpFin">
+      <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>財務 Pro-forma <span style="margin-left:auto;font-size:9px;color:var(--muted);">選填</span></h3>
+      <div class="body">
+        <div id="finReadout" style="font-size:12px;color:var(--muted);background:linear-gradient(135deg,#10243a,#0d1726);border:1px solid #1e3a52;border-radius:8px;padding:9px 11px;line-height:1.8;">畫建築量體＋設定參數後自動試算開發財務</div>
+        <div class="field"><label>土地成本 Land ($)</label><input type="number" id="fLand" value="4000000" step="100000" min="0"></div>
+        <div class="field"><label>營造單價 Hard ($/SF)</label><input type="number" id="fHard" value="180" step="5" min="0"></div>
+        <div class="field"><label>軟成本 Soft (%)</label><input type="number" id="fSoft" value="20" step="1" min="0"></div>
+        <div class="field" id="fRentResiRow"><label>月租 Rent ($/戶/月)</label><input type="number" id="fRentMo" value="1800" step="50" min="0"></div>
+        <div class="field" id="fRentCommRow"><label>租金 Rent ($/SF/年)</label><input type="number" id="fRentSf" value="28" step="1" min="0"></div>
+        <div class="field"><label>營運費率 OpEx (%)</label><input type="number" id="fOpex" value="35" step="1" min="0" max="90"></div>
+        <div class="field"><label>租金成長 Growth (%/yr)</label><input type="number" id="fGrowth" value="3" step="0.5" min="0" max="20"></div>
+        <div class="field"><label>持有年數 Hold (yr)</label><input type="number" id="fHold" value="5" step="1" min="1" max="30"></div>
+        <div class="field"><label>退場 Exit cap (%)</label><input type="number" id="fExitCap" value="5.5" step="0.25" min="2" max="15"></div>
+        <div class="hint">停車模式：依你畫的量體（用途×樓層→GFA）試算殖利率/IRR。每個方案會連財務一起存。</div>
       </div>
     </div>
 
