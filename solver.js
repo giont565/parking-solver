@@ -277,6 +277,31 @@ function packAtAngle(theta, ctx) {
   return { stalls, aisles: aisleWorld, count: stalls.length, theta };
 }
 
+// SPINE-BASED stall tiling: place double-loaded parking stalls along a drive-aisle CENTRELINE segment.
+// Stalls sit on both sides of the aisle (perpendicular rows tiled along the line), validity-tested against
+// the boundary + blockers. This is the editable-spine primitive — re-run it when a spine node is dragged so
+// the stalls re-attach to the reshaped aisle. `sides`: 0/undefined = both (double-loaded), +1 / -1 = single.
+function tileStallsAlongSpine(line, p, boundary, blockers, sides) {
+  const a = line[0], b = line[line.length - 1];
+  const L = Math.hypot(b.x - a.x, b.y - a.y); if (L < 2) return [];
+  const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
+  const W = p.aisle, D = p.vpd, w = p.stallW, setback = (p.setback || 0) + (p.greenBuffer || 0), blk = blockers || [];
+  const toWorld = (t, q) => ({ x: a.x + dir.x * t + per.x * q, y: a.y + dir.y * t + per.y * q });
+  const out = [];
+  for (const s of (sides === 1 ? [1] : sides === -1 ? [-1] : [1, -1])) {
+    const qIn = s * (W / 2), qOut = s * (W / 2 + D);                        // inner (aisle edge) → outer (wall)
+    for (let t = 0; t + w <= L + 0.5; t += w) {
+      const corners = [toWorld(t, qIn), toWorld(t + w, qIn), toWorld(t + w, qOut), toWorld(t, qOut)];
+      if (!polyInPoly(corners, boundary)) continue;
+      if (setback > 0 && corners.some(c => { for (let j = 0, k = boundary.length - 1; j < boundary.length; k = j++) if (distPtSeg(c, boundary[k], boundary[j]) < setback) return true; return false; })) continue;
+      if (blk.some(bl => polyOverlap(corners, bl))) continue;
+      const wc = polyCenter(corners);
+      out.push({ poly: corners, type: 'standard', compact: false, cx: wc.x, cy: wc.y, aprobe: toWorld(t + w / 2, s * (W / 2 - 0.5)) });
+    }
+  }
+  return out;
+}
+
 /* --------------------------- orientation search -------------------------- */
 function candidateAngles(boundary, orient) {
   const deg2rad = d => d * Math.PI / 180;
@@ -1659,7 +1684,7 @@ function solveSite(input) {
 /* ------------------------------- exports --------------------------------- */
 global.PS = {
   solveSite, buildableEnvelope, polyScaleAbout, clipHP,
-  solve, packAtAngle, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
+  solve, packAtAngle, tileStallsAlongSpine, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
   polyArea, centroid, bbox, pointInPoly, polyInPoly, polyOverlap,
   ANGLE_PRESETS,
 };
