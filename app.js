@@ -45,6 +45,10 @@ const S = {
   dragBoundaryEdge: null,  // {i,last,moved} dragging a whole boundary EDGE (stretch the site)
   dragBldgEdge: null,      // {bi,ei,last} dragging a building EDGE
   dragBldgBody: null,      // {bi,last,moved} dragging a whole building (move its position)
+  dragObsVtx: null,        // {oi,pi} obstacle corner · dragObsEdge {oi,ei,last} edge · dragObsBody {oi,last,moved} whole move
+  dragObsEdge: null,
+  dragObsBody: null,
+  selObstacle: null,       // index of the selected obstacle (for Delete)
   panning: false, panStart: null,
   selStall: null, selBuilding: null,
   history: [], hIdx: -1, _restoring: false,   // undo / redo snapshot stack
@@ -543,6 +547,13 @@ function draw() {
     ctx.lineWidth = 1.5; ctx.strokeStyle = '#ef4444'; ctx.stroke();
     hatch(o, '#ef4444', .35);
   }
+  if (S.tool === 'select' && !S.is3d && S.layers.obstacle.vis) {   // obstacle corner handles (drag corner / edge / whole to adjust)
+    for (let oi = 0; oi < (S.obstacles || []).length; oi++) {
+      const sel = S.selObstacle === oi;
+      if (sel) { pathPoly(S.obstacles[oi], true); ctx.lineWidth = 2; ctx.strokeStyle = '#f87171'; ctx.stroke(); }
+      for (const p of S.obstacles[oi]) { const s = toScreen(p); ctx.beginPath(); ctx.arc(s.x, s.y, sel ? 5.5 : 4, 0, 6.2832); ctx.fillStyle = '#ef4444'; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = '#0f172a'; ctx.stroke(); }
+    }
+  }
   // landscape trees (over parking/buildings, under markers)
   drawFlowOverlay();
   drawEarthwork();
@@ -675,6 +686,22 @@ function bldgEdgeAt(w) {          // pick a building EDGE (not a corner) → {bi
     const poly = S.buildings[bi].poly;
     if (poly.some(v => { const s = toScreen(v); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;   // near a corner → corner grab
     for (let ei = 0; ei < poly.length; ei++) { const A = toScreen(poly[ei]), B = toScreen(poly[(ei + 1) % poly.length]); if (distSegPx(m, A, B) < 8) return { bi, ei }; }
+  }
+  return null;
+}
+function obstacleVertexAt(w) {    // pick an obstacle corner near w → {oi, pi}
+  if (!S.layers.obstacle.vis || S.layers.obstacle.lock) return null;
+  const m = toScreen(w);
+  for (let oi = 0; oi < (S.obstacles || []).length; oi++) { const poly = S.obstacles[oi]; for (let pi = 0; pi < poly.length; pi++) { const s = toScreen(poly[pi]); if (Math.hypot(s.x - m.x, s.y - m.y) < 14) return { oi, pi }; } }
+  return null;
+}
+function obstacleEdgeAt(w) {      // pick an obstacle EDGE (not a corner) → {oi, ei}
+  if (!S.layers.obstacle.vis || S.layers.obstacle.lock) return null;
+  const m = toScreen(w);
+  for (let oi = 0; oi < (S.obstacles || []).length; oi++) {
+    const poly = S.obstacles[oi];
+    if (poly.some(v => { const s = toScreen(v); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;
+    for (let ei = 0; ei < poly.length; ei++) { const A = toScreen(poly[ei]), B = toScreen(poly[(ei + 1) % poly.length]); if (distSegPx(m, A, B) < 8) return { oi, ei }; }
   }
   return null;
 }
@@ -1622,6 +1649,10 @@ cv.addEventListener('pointerdown', e => {
     if (pickable('building')) {
       for (const b of S.buildings) if (PS.pointInPoly(w, b.poly)) { S.dragBldgBody = { bi: S.buildings.indexOf(b), last: w, moved: false }; S.selBuilding = b; S.selStall = null; refreshBldgPanel(); draw(); return; }
     }
+    // OBSTACLE — corner / edge / whole-move (parking re-packs around it on release)
+    { const ov = obstacleVertexAt(w); if (ov) { S.dragObsVtx = ov; S.selObstacle = ov.oi; S.selStall = null; draw(); return; } }
+    { const oe = obstacleEdgeAt(w); if (oe) { S.dragObsEdge = { oi: oe.oi, ei: oe.ei, last: w }; S.selObstacle = oe.oi; S.selStall = null; draw(); return; } }
+    if (pickable('obstacle')) { for (let oi = 0; oi < S.obstacles.length; oi++) if (PS.pointInPoly(w, S.obstacles[oi])) { S.dragObsBody = { oi, last: w, moved: false }; S.selObstacle = oi; S.selStall = null; draw(); return; } }
     // click stall to edit
     if (S.solution && pickable('parking')) {
       for (const s of S.solution.stalls) {
@@ -1632,7 +1663,7 @@ cv.addEventListener('pointerdown', e => {
     { const ai = aisleAt(w); if (ai >= 0) { S.selAisle = ai; S.selStall = null; S.selRoad = null; showAislePopup(ai); draw(); return; } }
     // clicking an ORANGE/GREEN connector (auto "glue" lanes, regenerated each solve) → explain why it's not directly editable
     { if (connectorAt(w) >= 0) { S.selAisle = null; hideAislePopup(); toast('連接道：拖它兩端的橘色點可調整這條線（灰色車道拖藍色點、車位會跟著重貼）'); draw(); return; } }
-    S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
+    S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; S.selObstacle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
   }
 });
 
@@ -1701,6 +1732,9 @@ cv.addEventListener('pointermove', e => {
     if (b) { const d = { x: w.x - S.dragBldgBody.last.x, y: w.y - S.dragBldgBody.last.y }; b.poly = b.poly.map(p => ({ x: p.x + d.x, y: p.y + d.y })); (b.voids || []).forEach(v => { for (let k = 0; k < v.length; k++) v[k] = { x: v[k].x + d.x, y: v[k].y + d.y }; }); S.dragBldgBody.last = w; S.dragBldgBody.moved = true; updateMassInfo(b); draw(); }
     return;
   }
+  if (S.dragObsVtx) { const o = S.obstacles[S.dragObsVtx.oi]; if (o) { o[S.dragObsVtx.pi] = snap(w); draw(); } return; }
+  if (S.dragObsEdge) { const o = S.obstacles[S.dragObsEdge.oi]; if (o) { const n = o.length, ei = S.dragObsEdge.ei, d = { x: w.x - S.dragObsEdge.last.x, y: w.y - S.dragObsEdge.last.y }; o[ei] = { x: o[ei].x + d.x, y: o[ei].y + d.y }; o[(ei + 1) % n] = { x: o[(ei + 1) % n].x + d.x, y: o[(ei + 1) % n].y + d.y }; S.dragObsEdge.last = w; draw(); } return; }
+  if (S.dragObsBody) { const o = S.obstacles[S.dragObsBody.oi]; if (o) { const d = { x: w.x - S.dragObsBody.last.x, y: w.y - S.dragObsBody.last.y }; S.obstacles[S.dragObsBody.oi] = o.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragObsBody.last = w; S.dragObsBody.moved = true; draw(); } return; }
   if (S.draft) draw();
 });
 
@@ -1745,6 +1779,12 @@ window.addEventListener('pointerup', () => {
     if (moved) { const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution); resolveActive(); if (!reSolve) { updateMetrics(); commit(); } }
     return;
   }
+  if (S.dragObsVtx || S.dragObsEdge || (S.dragObsBody && S.dragObsBody.moved)) {   // obstacle reshaped/moved → re-pack around it
+    S.dragObsVtx = null; S.dragObsEdge = null; S.dragObsBody = null;
+    const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution); resolveActive(); if (!reSolve) { updateMetrics(); commit(); }
+    return;
+  }
+  if (S.dragObsBody) { S.dragObsBody = null; return; }   // obstacle clicked without a move → just selected
   if (S.dragBldgVtx) {                               // footprint corner moved → re-pack parking around the new massing
     S.dragBldgVtx = null;
     const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
@@ -1887,6 +1927,8 @@ window.addEventListener('keydown', e => {
       S.roadLines.splice(S.selRoad, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除道路');
     } else if (S.selAisle != null) {
       removeAisle(S.selAisle);
+    } else if (S.selObstacle != null && S.obstacles[S.selObstacle]) {
+      S.obstacles.splice(S.selObstacle, 1); S.selObstacle = null; resolveActive(); draw(); toast('已刪除障礙');
     } else if (S.selStall && S.solution) {
       const i = S.solution.stalls.indexOf(S.selStall);
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
@@ -1907,7 +1949,7 @@ function setTool(t) {
   if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
-  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); }
+  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; }
   draw();
 }
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
