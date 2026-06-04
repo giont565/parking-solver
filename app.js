@@ -651,13 +651,15 @@ function spineToRect(line, W) {   // rebuild a drive-aisle rect from its centre-
   return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
 }
 function spineBlockers() { return bPolys().concat(S.obstacles || [], S.roads || []); }
-function retileSpine(si) {        // re-tile one aisle's stalls along its (edited) spine — drag a node → stalls re-attach
+function retileSpine(si, avoidOverlap) {   // re-tile one aisle's stalls along its (edited) spine — drag a node → stalls re-attach
   const park = activePark(); if (!park || !park.spines || !park.spines[si]) return;
   const sp = park.spines[si];
   const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: sp.width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
-  const fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
+  const others = park.stalls.filter(s => s.spine !== si);                // every OTHER aisle's stalls
+  let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
+  if (avoidOverlap) fresh = fresh.filter(ns => !others.some(os => PS.polyOverlap(ns.poly, os.poly)));   // drop stalls overlapping a neighbour lane
   fresh.forEach(s => s.spine = si);
-  park.stalls = park.stalls.filter(s => s.spine !== si).concat(fresh);   // swap out this spine's stalls
+  park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
   park.aisles[si] = { poly: spineToRect(sp.line, sp.width) };            // keep the grey lane in sync
 }
 function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
@@ -1654,10 +1656,12 @@ window.addEventListener('pointerup', () => {
     if (S.roadLines[ri]) showRoadPopup(ri); else hideRoadPopup();
     return;
   }
-  if (S.dragSpine) {                                 // spine node released → finalise the reshaped lane
+  if (S.dragSpine) {                                 // spine node released → final clean re-tile (drop stalls overlapping neighbours)
     const si = S.dragSpine.si; S.dragSpine = null;
+    retileSpine(si, true);
+    (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
-    commit();
+    draw(); commit();
     return;
   }
   if (S.dragBldgVtx) {                               // footprint corner moved → re-pack parking around the new massing
