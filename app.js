@@ -719,14 +719,16 @@ function spineToRect(line, W) {   // build the grey lane polygon from its centre
     const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
     return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
   }
-  const norm = i => {             // node normal = averaged perpendicular of the adjacent segment(s)
-    let nx = 0, ny = 0;
-    if (i > 0) { const a = line[i - 1], b = line[i], L = Math.hypot(b.x - a.x, b.y - a.y) || 1; nx += -(b.y - a.y) / L; ny += (b.x - a.x) / L; }
-    if (i < line.length - 1) { const a = line[i], b = line[i + 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1; nx += -(b.y - a.y) / L; ny += (b.x - a.x) / L; }
-    const L = Math.hypot(nx, ny) || 1; return { x: nx / L, y: ny / L };
+  const segN = (a, b) => { const L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { x: -(b.y - a.y) / L, y: (b.x - a.x) / L }; };
+  const offset = i => {           // miter offset at node i: bisector of the adjacent segment normals, lengthened by 1/cos(half-angle) so the strip keeps width W through a bend (no pinching)
+    const n1 = i > 0 ? segN(line[i - 1], line[i]) : null, n2 = i < line.length - 1 ? segN(line[i], line[i + 1]) : null;
+    const a = n1 || n2, b = n2 || n1;
+    let bx = a.x + b.x, by = a.y + b.y; const bl = Math.hypot(bx, by) || 1; bx /= bl; by /= bl;
+    const miter = Math.min(2.5, 1 / Math.max(0.4, bx * a.x + by * a.y));   // capped so a very sharp bend doesn't spike out
+    return { x: bx * h * miter, y: by * h * miter };
   };
   const left = [], right = [];
-  for (let i = 0; i < line.length; i++) { const n = norm(i); left.push({ x: line[i].x + n.x * h, y: line[i].y + n.y * h }); right.push({ x: line[i].x - n.x * h, y: line[i].y - n.y * h }); }
+  for (let i = 0; i < line.length; i++) { const o = offset(i); left.push({ x: line[i].x + o.x, y: line[i].y + o.y }); right.push({ x: line[i].x - o.x, y: line[i].y - o.y }); }
   return left.concat(right.reverse());
 }
 function spineBlockers() { return bPolys().concat(S.obstacles || [], S.roads || []); }
@@ -748,9 +750,11 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
   const aIdx = sp.src;                                                   // aisle index (= si, since aisle spines come first)
   const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: sp.width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
   const others = park.stalls.filter(s => s.spine !== si);                // every OTHER aisle's stalls
-  const blk = spineBlockers().concat((park.connectors || []).map(c => c.poly || c));   // treat cross-aisles/ramps as no-go → leave a gap where a drive crosses (matches the original pack, avoids the under-drive prune)
-  let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, blk, sp.sides || 0);
-  if (avoidOverlap) fresh = fresh.filter(ns => !others.some(os => PS.polyOverlap(ns.poly, os.poly)));   // drop stalls overlapping a neighbour lane
+  let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
+  // drop a fresh stall only if it REALLY overlaps a neighbour — shrink it ~1ft first so a normal back-to-back
+  // touch (rows from adjacent aisles meet edge-to-edge) is kept, not wrongly culled by edge-touch polyOverlap.
+  const shrink = poly => { const cx = (poly[0].x + poly[1].x + poly[2].x + poly[3].x) / 4, cy = (poly[0].y + poly[1].y + poly[2].y + poly[3].y) / 4; return poly.map(p => ({ x: cx + (p.x - cx) * 0.88, y: cy + (p.y - cy) * 0.88 })); };
+  if (avoidOverlap) fresh = fresh.filter(ns => { const ins = shrink(ns.poly); return !others.some(os => PS.polyOverlap(ins, os.poly)); });
   fresh.forEach(s => s.spine = si);
   park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
   park.aisles[aIdx] = { poly: spineToRect(sp.line, sp.width) };          // keep the grey lane in sync
@@ -788,7 +792,8 @@ function insertSpineNode(si, w) {   // add a bend node into aisle spine si at th
     const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t, d = Math.hypot(w.x - px, w.y - py);
     if (d < bestD) { bestD = d; best = i; bestPt = { x: px, y: py }; }
   }
-  if (best < 0) return false;
+  if (best < 0 || !bestPt) return false;
+  if (Math.hypot(bestPt.x - ln[best].x, bestPt.y - ln[best].y) < 3 || Math.hypot(bestPt.x - ln[best + 1].x, bestPt.y - ln[best + 1].y) < 3) return false;   // too close to an existing node → don't make a zero-length segment
   ln.splice(best + 1, 0, bestPt);                                          // new node between the two it sits between
   retileSpine(si, true); reconnectNetwork(); return true;
 }

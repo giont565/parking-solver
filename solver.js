@@ -287,22 +287,25 @@ function tileStallsAlongSpine(line, p, boundary, blockers, sides) {
   // stalls that collide with an already-placed one are dropped. A straight 2-node line tiles exactly as before.
   const W = p.aisle, D = p.vpd, w = p.stallW, setback = (p.setback || 0) + (p.greenBuffer || 0), blk = blockers || [];
   const offBoundary = c => { for (let j = 0, k = boundary.length - 1; j < boundary.length; k = j++) if (distPtSeg(c, boundary[k], boundary[j]) < setback) return true; return false; };
+  // walk ONE continuous arc-length cursor along the whole polyline (no per-segment reset → no gap at a bend);
+  // each stall is a clean rectangle of width w centred on the centre-line, aligned to its local segment.
+  const segs = []; let total = 0;
+  for (let i = 0; i + 1 < line.length; i++) { const a = line[i], b = line[i + 1], L = Math.hypot(b.x - a.x, b.y - a.y); if (L < 0.01) continue; segs.push({ a, dir: { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, L, t0: total, idx: segs.length }); total += L; }
+  if (!segs.length || total < 2) return [];
+  const segAt = t => { for (let i = segs.length - 1; i >= 0; i--) if (t >= segs[i].t0 - 1e-6) return segs[i]; return segs[0]; };
+  const ptAt = t => { const s = segAt(t), lt = Math.max(0, Math.min(s.L, t - s.t0)); return { x: s.a.x + s.dir.x * lt, y: s.a.y + s.dir.y * lt, seg: s }; };
   const out = [];
   for (const s of (sides === 1 ? [1] : sides === -1 ? [-1] : [1, -1])) {
     const qIn = s * (W / 2), qOut = s * (W / 2 + D);                        // inner (aisle edge) → outer (wall)
-    for (let seg = 0; seg + 1 < line.length; seg++) {
-      const a = line[seg], b = line[seg + 1];
-      const L = Math.hypot(b.x - a.x, b.y - a.y); if (L < 2) continue;
-      const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
-      const toWorld = (t, q) => ({ x: a.x + dir.x * t + per.x * q, y: a.y + dir.y * t + per.y * q });
-      for (let t = 0; t + w <= L + 0.5; t += w) {
-        const corners = [toWorld(t, qIn), toWorld(t + w, qIn), toWorld(t + w, qOut), toWorld(t, qOut)];
-        if (!polyInPoly(corners, boundary)) continue;
-        if (setback > 0 && corners.some(offBoundary)) continue;
-        if (blk.some(bl => polyOverlap(corners, bl))) continue;
-        const wc = polyCenter(corners);
-        out.push({ poly: corners, type: 'standard', compact: false, cx: wc.x, cy: wc.y, aprobe: toWorld(t + w / 2, s * (W / 2 - 0.5)), _side: s, _seg: seg });
-      }
+    for (let t = 0; t + w <= total + 0.5; t += w) {
+      const c = ptAt(t + w / 2), dir = c.seg.dir, per = { x: -dir.y, y: dir.x };
+      const x0 = c.x - dir.x * (w / 2), y0 = c.y - dir.y * (w / 2), x1 = c.x + dir.x * (w / 2), y1 = c.y + dir.y * (w / 2);
+      const corners = [{ x: x0 + per.x * qIn, y: y0 + per.y * qIn }, { x: x1 + per.x * qIn, y: y1 + per.y * qIn }, { x: x1 + per.x * qOut, y: y1 + per.y * qOut }, { x: x0 + per.x * qOut, y: y0 + per.y * qOut }];
+      if (!polyInPoly(corners, boundary)) continue;
+      if (setback > 0 && corners.some(offBoundary)) continue;
+      if (blk.some(bl => polyOverlap(corners, bl))) continue;
+      const wc = polyCenter(corners);
+      out.push({ poly: corners, type: 'standard', compact: false, cx: wc.x, cy: wc.y, aprobe: { x: c.x + per.x * s * (W / 2 - 0.5), y: c.y + per.y * s * (W / 2 - 0.5) }, _side: s, _seg: c.seg.idx });
     }
   }
   // at a bend the two segments' stalls crowd on the inside — drop a stall that overlaps a kept stall from a
