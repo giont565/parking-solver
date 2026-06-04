@@ -655,6 +655,8 @@ function deriveSpines(park) {     // after a pack: every drive aisle + connector
   park.spines = park.aisles.map((a, i) => Object.assign(aisleSpine(a.poly), { kind: 'aisle', src: i }));   // aisle spines FIRST (index = aisle index)
   (park.connectors || []).forEach((c, i) => { const poly = c.poly || c; if (poly && poly.length >= 3) park.spines.push(Object.assign(aisleSpine(poly), { kind: 'conn', src: i })); });
   for (const s of park.stalls) { s.spine = -1; for (let i = 0; i < park.aisles.length; i++) if (s.aprobe && PS.pointInPoly(s.aprobe, park.aisles[i].poly)) { s.spine = i; break; } }
+  if (S.aisleEdits) for (let i = 0; i < park.aisles.length; i++)   // honour single-load edits so a later spine drag keeps one side
+    if (S.aisleEdits[aisleKey(park.aisles[i].poly)] === 'single' && park.spines[i]) park.spines[i].sides = spineKeptSide(park.spines[i], park, i);
 }
 function spineNodeAt(w) {         // pick a draggable spine end-node near w → {si, ni} or null
   const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return null;
@@ -711,6 +713,12 @@ function spineToRect(line, W) {   // rebuild a drive-aisle rect from its centre-
   return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
 }
 function spineBlockers() { return bPolys().concat(S.obstacles || [], S.roads || []); }
+function spineKeptSide(sp, park, aIdx) {   // single-loaded aisle → which side of the centre-line the surviving stalls sit (+1 / -1), else 0
+  const a = sp.line[0], b = sp.line[sp.line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const per = { x: -(b.y - a.y) / L, y: (b.x - a.x) / L };   // same perp convention as tileStallsAlongSpine
+  for (const s of park.stalls) { if (s.spine !== aIdx) continue; return ((s.cx - a.x) * per.x + (s.cy - a.y) * per.y) >= 0 ? 1 : -1; }
+  return 0;
+}
 function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node → an aisle re-tiles its stalls, a connector lane just reshapes
   const park = activePark(); if (!park || !park.spines || !park.spines[si]) return;
   const sp = park.spines[si];
@@ -755,7 +763,9 @@ function setAisleEdit(i, op) {     // record (or clear, op=null) an override for
   const k = aisleKey(park.aisles[i].poly); S.aisleEdits = S.aisleEdits || {};
   if (op) S.aisleEdits[k] = op; else delete S.aisleEdits[k];
   if (op === 'single') {          // apply now to the live solution (instant); keep the aisle selected
-    applyAisleEdits(park); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); commit(); showAislePopup(i); draw();
+    applyAisleEdits(park);
+    if (park.spines && park.spines[i]) park.spines[i].sides = spineKeptSide(park.spines[i], park, i);   // so a later spine drag won't revert to double
+    (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); commit(); showAislePopup(i); draw();
     toast('已改為單邊停車（再按「雙邊停」可還原）');
   } else {                        // remove, or restore-to-double → re-pack so removed stalls come back / drop cleanly
     S.selAisle = null; hideAislePopup(); resolveActive();
