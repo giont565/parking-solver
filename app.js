@@ -713,11 +713,12 @@ function spineToRect(line, W) {   // rebuild a drive-aisle rect from its centre-
   return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
 }
 function spineBlockers() { return bPolys().concat(S.obstacles || [], S.roads || []); }
-function spineKeptSide(sp, park, aIdx) {   // single-loaded aisle → which side of the centre-line the surviving stalls sit (+1 / -1), else 0
+function spineKeptSide(sp, park, aIdx) {   // single-loaded aisle → which side of the centre-line the surviving stalls sit (+1 / -1), 0 if none
   const a = sp.line[0], b = sp.line[sp.line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const per = { x: -(b.y - a.y) / L, y: (b.x - a.x) / L };   // same perp convention as tileStallsAlongSpine
-  for (const s of park.stalls) { if (s.spine !== aIdx) continue; return ((s.cx - a.x) * per.x + (s.cy - a.y) * per.y) >= 0 ? 1 : -1; }
-  return 0;
+  let pos = 0, neg = 0;                                       // count both sides (robust even if ever handed a mixed aisle)
+  for (const s of park.stalls) { if (s.spine !== aIdx) continue; ((s.cx - a.x) * per.x + (s.cy - a.y) * per.y) >= 0 ? pos++ : neg++; }
+  return (pos === 0 && neg === 0) ? 0 : (pos >= neg ? 1 : -1);
 }
 function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node → an aisle re-tiles its stalls, a connector lane just reshapes
   const park = activePark(); if (!park || !park.spines || !park.spines[si]) return;
@@ -773,12 +774,12 @@ function cascadeNeighbors(si) {
     let moved = false;
     for (const B of lanes) {
       if (B.i === si) continue;
-      const up = B.p >= self.p;
-      for (const A of lanes) {
+      const up = B.p0 >= self.p0;                                            // side & ordering fixed by the ORIGINAL positions p0,
+      for (const A of lanes) {                                               // so the relaxation is stable regardless of array order
         if (A.i === B.i || !along(A, B)) continue;
-        const between = up ? (A.p < B.p && A.p >= self.p) : (A.p > B.p && A.p <= self.p);   // A lies between si and B (incl. si)
+        const between = up ? (A.p0 < B.p0 && A.p0 >= self.p0) : (A.p0 > B.p0 && A.p0 <= self.p0);   // A lies between si and B (incl. si)
         if (!between) continue;
-        if (up) { const need = A.p + A.pos + B.neg + GAP; if (B.p < need - TOL) { B.p = need; moved = true; } }
+        if (up) { const need = A.p + A.pos + B.neg + GAP; if (B.p < need - TOL) { B.p = need; moved = true; } }   // spacing uses LIVE p
         else    { const need = A.p - A.neg - B.pos - GAP; if (B.p > need + TOL) { B.p = need; moved = true; } }
       }
     }
