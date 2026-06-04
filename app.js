@@ -736,6 +736,56 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
   park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
   park.aisles[aIdx] = { poly: spineToRect(sp.line, sp.width) };          // keep the grey lane in sync
 }
+// --- CASCADE: when you drag one drive aisle, parallel neighbour lanes make room so stalls never overlap ---
+// Push-only: a clean grid is left untouched; only a lane you've crowded gets nudged outward (and its
+// neighbour in turn). Measured along the dragged lane's perpendicular, in a shared reference frame.
+function laneReach(park, i, ref) {     // {i, p:perp pos, pos/neg:stall reach each way, tlo/thi:extent ALONG the lane}, or null if not parallel
+  const sp = park.spines[i], a = sp.line[0], b = sp.line[sp.line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+  if (Math.abs(d.x * ref.dir.x + d.y * ref.dir.y) < 0.98) return null;   // not parallel → don't cascade this lane
+  const projPer = pt => (pt.x - ref.a.x) * ref.per.x + (pt.y - ref.a.y) * ref.per.y;
+  const projDir = pt => (pt.x - ref.a.x) * ref.dir.x + (pt.y - ref.a.y) * ref.dir.y;
+  const p = projPer({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  let pos = sp.width / 2, neg = sp.width / 2;                            // at least the aisle half-width on each side
+  let tlo = Math.min(projDir(a), projDir(b)), thi = Math.max(projDir(a), projDir(b));
+  for (const s of park.stalls) { if (s.spine !== i || !s.poly) continue; for (const cn of s.poly) { const q = projPer(cn) - p; if (q > pos) pos = q; if (-q > neg) neg = -q; const t = projDir(cn); if (t < tlo) tlo = t; if (t > thi) thi = t; } }
+  return { i, p, pos, neg, tlo, thi };
+}
+function shiftLaneAlong(i, per, delta) {     // translate aisle spine i by delta along per, then re-place its stalls
+  const park = activePark(), sp = park && park.spines && park.spines[i]; if (!sp) return;
+  sp.line = sp.line.map(pt => ({ x: pt.x + per.x * delta, y: pt.y + per.y * delta }));
+  retileSpine(i, false);                     // spacing is already cleared by the caller, so don't drop stalls
+}
+function cascadeNeighbors(si) {
+  const park = activePark(); if (!park || !park.spines) return;
+  const r0 = park.spines[si]; if (!r0 || r0.kind !== 'aisle') return;
+  const a = r0.line[0], b = r0.line[r0.line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const ref = { a, dir: { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per: { x: -(b.y - a.y) / L, y: (b.x - a.x) / L } };
+  const lanes = [];
+  for (let i = 0; i < park.spines.length; i++) { if (park.spines[i].kind !== 'aisle') continue; const r = laneReach(park, i, ref); if (r) { r.p0 = r.p; lanes.push(r); } }
+  const self = lanes.find(l => l.i === si); if (!self) return;
+  const along = (A, B) => Math.min(A.thi, B.thi) - Math.max(A.tlo, B.tlo) > 5;   // do the two lanes actually run side-by-side?
+  const GAP = 0.3, TOL = 0.5;                 // only push when overlapping by >TOL ft; leave a tiny GAP so re-tile keeps the stalls
+  // Relaxation: keep the dragged lane fixed; push every other lane just far enough OUTWARD to clear the
+  // lanes that sit BETWEEN it and the dragged lane AND truly run alongside it. A lane in another column
+  // (e.g. the same drive split by a building into two segments) never moves it — they don't run alongside.
+  for (let pass = 0; pass < lanes.length + 2; pass++) {
+    let moved = false;
+    for (const B of lanes) {
+      if (B.i === si) continue;
+      const up = B.p >= self.p;
+      for (const A of lanes) {
+        if (A.i === B.i || !along(A, B)) continue;
+        const between = up ? (A.p < B.p && A.p >= self.p) : (A.p > B.p && A.p <= self.p);   // A lies between si and B (incl. si)
+        if (!between) continue;
+        if (up) { const need = A.p + A.pos + B.neg + GAP; if (B.p < need - TOL) { B.p = need; moved = true; } }
+        else    { const need = A.p - A.neg - B.pos - GAP; if (B.p > need + TOL) { B.p = need; moved = true; } }
+      }
+    }
+    if (!moved) break;
+  }
+  for (const l of lanes) { const d = l.p - l.p0; if (Math.abs(d) > 0.1) shiftLaneAlong(l.i, ref.per, d); }   // apply net shift once per lane
+}
 function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
   const c = PS.centroid(poly); let dir = { x: 1, y: 0 }, best = -1;
   for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; } }
@@ -1759,16 +1809,16 @@ window.addEventListener('pointerup', () => {
     if (S.roadLines[ri]) showRoadPopup(ri); else hideRoadPopup();
     return;
   }
-  if (S.dragSpine) {                                 // spine node released → final clean re-tile (drop stalls overlapping neighbours)
+  if (S.dragSpine) {                                 // spine node released → re-tile, then let neighbour lanes make room
     const si = S.dragSpine.si; S.dragSpine = null;
-    retileSpine(si, true);
+    retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true);
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
     draw(); commit();
     return;
   }
-  if (S.dragSpineBody) {                              // whole-aisle move done → clean re-tile
-    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, true);
+  if (S.dragSpineBody) {                              // whole-aisle move done → re-tile, then let neighbour lanes make room
+    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true);
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
     draw(); commit();
