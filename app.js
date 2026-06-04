@@ -624,26 +624,38 @@ function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of a
   for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; } }
   return { c, per: { x: -dir.y, y: dir.x } };
 }
-function removeAisle(i) {         // delete a drive aisle + the stalls it serves (post-process on the current solution)
-  const park = activePark(); if (!park || !park.aisles[i]) return;
-  const ais = park.aisles[i].poly;
-  park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais)));   // drop stalls served by this aisle
-  park.aisles.splice(i, 1);
-  S.selAisle = null; hideAislePopup();
-  (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit();
-  toast('已移除這排車道與車位');
+function connectorAt(w) {         // index of an auto connector/spine under w (the orange/green "glue" lanes) or -1
+  const park = activePark(); if (!park || !park.connectors || !S.layers.parking.vis) return -1;
+  for (let i = 0; i < park.connectors.length; i++) { const poly = park.connectors[i].poly || park.connectors[i]; if (poly && poly.length >= 3 && PS.pointInPoly(w, poly)) return i; }
+  return -1;
 }
-function singleLoadAisle(i, side) {   // keep stalls on only ONE side of the aisle (single-loaded)
-  const park = activePark(); if (!park || !park.aisles[i]) return;
-  const ais = park.aisles[i].poly, ax = aisleAxis(ais);
-  park.stalls = park.stalls.filter(s => {
-    if (!(s.aprobe && PS.pointInPoly(s.aprobe, ais))) return true;                  // not served by this aisle → keep
-    const d = (s.cx - ax.c.x) * ax.per.x + (s.cy - ax.c.y) * ax.per.y;              // signed side of the centreline
-    return side > 0 ? d >= 0 : d < 0;
-  });
-  (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit();
-  toast('已改為單邊停車');
+// REVERSIBLE aisle overrides: edits are stored by aisle position and re-applied after every pack,
+// so 單邊停 / 移除 survive a re-solve AND can be undone (clear the override → re-pack restores the stalls).
+function aisleKey(poly) { const c = PS.centroid(poly); return Math.round(c.x / 3) + ',' + Math.round(c.y / 3); }
+function applyAisleEdits(park) {
+  const E = S.aisleEdits; if (!park || !E || !park.aisles) return;
+  for (let i = park.aisles.length - 1; i >= 0; i--) {
+    const op = E[aisleKey(park.aisles[i].poly)]; if (!op) continue;
+    const ais = park.aisles[i].poly;
+    if (op === 'remove') { park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais))); park.aisles.splice(i, 1); }
+    else if (op === 'single') { const ax = aisleAxis(ais); park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais)) || ((s.cx - ax.c.x) * ax.per.x + (s.cy - ax.c.y) * ax.per.y) >= 0); }
+  }
 }
+function setAisleEdit(i, op) {     // record (or clear, op=null) an override for an aisle, then apply/restore
+  const park = activePark(); if (!park || !park.aisles[i]) return;
+  const k = aisleKey(park.aisles[i].poly); S.aisleEdits = S.aisleEdits || {};
+  if (op) S.aisleEdits[k] = op; else delete S.aisleEdits[k];
+  if (op === 'single') {          // apply now to the live solution (instant); keep the aisle selected
+    applyAisleEdits(park); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); commit(); showAislePopup(i); draw();
+    toast('已改為單邊停車（再按「雙邊停」可還原）');
+  } else {                        // remove, or restore-to-double → re-pack so removed stalls come back / drop cleanly
+    S.selAisle = null; hideAislePopup(); resolveActive();
+    toast(op === 'remove' ? '已移除這排車道與車位' : '已還原雙邊停車');
+  }
+}
+function removeAisle(i) { setAisleEdit(i, 'remove'); }
+function singleLoadAisle(i) { setAisleEdit(i, 'single'); }
+function restoreAisle(i) { setAisleEdit(i, null); }
 function roadChanged() {          // re-derive strips, re-pack around the roads, and record one undo step
   rebuildRoadStrips();
   const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
@@ -1534,8 +1546,10 @@ cv.addEventListener('pointerdown', e => {
         if (PS.pointInPoly(w, s.poly)) { S.selStall = s; S.selAisle = null; hideAislePopup(); draw(); return; }
       }
     }
-    // MANUAL CIRCULATION — click a drive aisle to select it (remove / single-load; drag it to slide the whole grid)
+    // MANUAL CIRCULATION — click a GREY drive aisle to select it (remove / single-load; drag it to slide the whole grid)
     { const ai = aisleAt(w); if (ai >= 0) { const pk = activePark(); S.selAisle = ai; S.dragAisle = { start: w, per: aisleAxis(pk.aisles[ai].poly).per, moved: false }; S.selStall = null; S.selRoad = null; showAislePopup(ai); draw(); return; } }
+    // clicking an ORANGE/GREEN connector (auto "glue" lanes, regenerated each solve) → explain why it's not directly editable
+    { if (connectorAt(w) >= 0) { S.selAisle = null; hideAislePopup(); toast('這是系統自動畫的連接道／引道（讓車子開得到每個車位、會自動重畫）。要調動線：拖「灰色車道」、用「🔄 換動線排法」、或對灰色車道移除/單邊停。'); draw(); return; } }
     S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
   }
 });
@@ -1809,6 +1823,7 @@ function doSolve() {
       params: { ...S.params, gridShift: S.gridShift }, opts: S.opts,
     });
     S.solution = res; S.selStall = null;
+    applyAisleEdits(S.solution);                  // re-apply manual aisle overrides (single-load / remove) to the fresh pack
     $('#busy').classList.remove('show');
     updateMetrics(); draw(); commit();
     const ms = Math.round(performance.now() - t0);
@@ -2266,7 +2281,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.contextBuildings = []; S.entrances = [];
+  S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
@@ -2370,12 +2385,12 @@ document.querySelectorAll('#maxRunSeg button').forEach(b => b.onclick = () => {
 // target only re-validates (no re-solve needed — it doesn't change the layout)
 $('#pTarget').addEventListener('input', () => { readParams(); updateMetrics(); draw(); });
 // live params -> re-solve on change (cheap enough). Any param tweak clears a manual grid-drag (fresh layout).
-['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { S.gridShift = null; if (S.solution) doSolve(); }));
+['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { S.gridShift = null; S.aisleEdits = null; if (S.solution) doSolve(); }));
 // CHANGE ROW AXIS — cycle the circulation direction (like TestFit's Row-axis change); the whole lot re-packs cleanly
 const ROW_AXIS = ['edge', '90', '0', 'auto'];
 $('#btnRowAxis').onclick = () => {
   const next = ROW_AXIS[(ROW_AXIS.indexOf(String(S.params.orient)) + 1) % ROW_AXIS.length];
-  S.params.orient = next; $('#pOrient').value = next; S.gridShift = null;   // new direction → fresh grid phase
+  S.params.orient = next; $('#pOrient').value = next; S.gridShift = null; S.aisleEdits = null;   // new direction → fresh grid phase
   if (S.boundary.length < 3) { toast('請先畫出基地邊界再換動線'); return; }
   doSolve();                                   // re-packs the whole lot around the new circulation direction (toasts the new count)
 };
@@ -2498,6 +2513,7 @@ function doSolveSite() {
   setTimeout(() => {
     const t0 = performance.now();
     S.site = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
+    if (S.site && S.site.parkSol) applyAisleEdits(S.site.parkSol);   // re-apply manual aisle overrides to the site's parking field
     $('#busy').classList.remove('show');
     updateSiteMetrics(); draw(); commit();
     const ms = Math.round(performance.now() - t0);
@@ -2595,7 +2611,7 @@ function updateUxSum() {
 
 function sampleSiteParcel() {
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -2634,7 +2650,7 @@ function loadDemo(d) {
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
   const bb = PS.bbox(S.boundary);
-  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.edgeSetback = {};
+  S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.edgeSetback = {};
   S.entrances = [{ x: (bb.minX + bb.maxX) / 2, y: bb.minY, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
   $('#sUse').value = d.use;                                   // use type → presets + panel visibility
@@ -2880,7 +2896,8 @@ $('#roadDel').onclick = () => {
 };
 // drive-aisle editor buttons (manual circulation editing)
 $('#aisleRemove').onclick = () => { if (S.selAisle != null) removeAisle(S.selAisle); };
-$('#aisleSingle').onclick = () => { if (S.selAisle != null) singleLoadAisle(S.selAisle, +1); };
+$('#aisleSingle').onclick = () => { if (S.selAisle != null) singleLoadAisle(S.selAisle); };
+$('#aisleDouble').onclick = () => { if (S.selAisle != null) restoreAisle(S.selAisle); };
 
 /* ------------------- modal: generative options + compare ----------------- */
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -2907,7 +2924,7 @@ function openMetesModal() {
   $('#mbGen').onclick = () => {
     const pts = parseMetes($('#mbText').value);
     if (pts.length < 3) { $('#mbErr').textContent = '至少 3 段才能組成地界（格式：N45E 100，每行一段）。'; return; }
-    S.site = null; S.solution = null; S.boundary = pts; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null;
+    S.site = null; S.solution = null; S.boundary = pts; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null;
     S.entrances = [{ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, type: 'inout' }];
     closeModal(); fitView(); commit();
     toast(`已依測量描述產生 ${pts.length} 角地界`);
