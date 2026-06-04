@@ -1684,7 +1684,7 @@ function solveSite(input) {
 /* ------------------------------- exports --------------------------------- */
 global.PS = {
   solveSite, buildableEnvelope, polyScaleAbout, clipHP,
-  solve, packAtAngle, tileStallsAlongSpine, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
+  solve, packAtAngle, tileStallsAlongSpine, buildCirculation, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
   polyArea, centroid, bbox, pointInPoly, polyInPoly, polyOverlap,
   ANGLE_PRESETS,
 };

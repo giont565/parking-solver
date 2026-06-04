@@ -786,6 +786,15 @@ function cascadeNeighbors(si) {
   }
   for (const l of lanes) { const d = l.p - l.p0; if (Math.abs(d) > 0.1) shiftLaneAlong(l.i, ref.per, d); }   // apply net shift once per lane
 }
+// After any manual lane edit, REBUILD the drive network: link every aisle into one connected ladder and
+// route a ramp from each entrance, dropping stalls that can no longer be reached — so the lot stays drivable.
+function reconnectNetwork() {
+  if (S.mode === 'site') return;                       // site-mode parking carves its own boundary/blockers; skip for now
+  const park = S.solution;
+  if (!park || !park.aisles || !park.aisles.length || !S.entrances || !S.entrances.length || !window.PS.buildCirculation) return;
+  PS.buildCirculation(park, S.boundary, S.entrances, S.params.aisle, S.params.access === 'open', bPolys(), S.obstacles || []);
+  deriveSpines(park);                                  // aisles were re-clipped + connectors rebuilt → refresh editable spines, re-tag stalls, keep single-load sides
+}
 function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
   const c = PS.centroid(poly); let dir = { x: 1, y: 0 }, best = -1;
   for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length], L = Math.hypot(b.x - a.x, b.y - a.y); if (L > best) { best = L; dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; } }
@@ -1809,18 +1818,18 @@ window.addEventListener('pointerup', () => {
     if (S.roadLines[ri]) showRoadPopup(ri); else hideRoadPopup();
     return;
   }
-  if (S.dragSpine) {                                 // spine node released → re-tile, then let neighbour lanes make room
+  if (S.dragSpine) {                                 // spine node released → re-tile, neighbours make room, then re-link the network
     const si = S.dragSpine.si; S.dragSpine = null;
-    retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true);
+    retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true); reconnectNetwork();
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
-    const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
+    const park = activePark(); if (S.mode === 'site' && park && park.spines && park.spines[si]) showAislePopup(si); else { S.selAisle = null; hideAislePopup(); }
     draw(); commit();
     return;
   }
-  if (S.dragSpineBody) {                              // whole-aisle move done → re-tile, then let neighbour lanes make room
-    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true);
+  if (S.dragSpineBody) {                              // whole-aisle move done → re-tile, neighbours make room, then re-link the network
+    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, false); cascadeNeighbors(si); retileSpine(si, true); reconnectNetwork();
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
-    const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
+    const park = activePark(); if (S.mode === 'site' && park && park.spines && park.spines[si]) showAislePopup(si); else { S.selAisle = null; hideAislePopup(); }
     draw(); commit();
     return;
   }
