@@ -41,6 +41,10 @@ const S = {
   dragBldgVtx: null,       // {bi,pi} dragging a building footprint corner (massing footprint edit → parking re-packs)
   selAisle: null,          // index of the selected drive aisle (manual circulation editing)
   dragSpine: null,         // {si,ni} dragging a drive-aisle spine end node → that aisle reshapes + stalls re-attach
+  dragSpineBody: null,     // {si,last} dragging a whole drive aisle (the line, not an end) → move the lane + stalls
+  dragBoundaryEdge: null,  // {i,last,moved} dragging a whole boundary EDGE (stretch the site)
+  dragBldgEdge: null,      // {bi,ei,last} dragging a building EDGE
+  dragBldgBody: null,      // {bi,last,moved} dragging a whole building (move its position)
   panning: false, panStart: null,
   selStall: null, selBuilding: null,
   history: [], hIdx: -1, _restoring: false,   // undo / redo snapshot stack
@@ -645,6 +649,33 @@ function spineNodeAt(w) {         // pick a draggable spine end-node near w → 
   const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return null;
   const m = toScreen(w);
   for (let si = 0; si < park.spines.length; si++) { const ln = park.spines[si].line; for (let ni = 0; ni < ln.length; ni++) { const s = toScreen(ln[ni]); if (Math.hypot(s.x - m.x, s.y - m.y) < 14) return { si, ni }; } }
+  return null;
+}
+function spineBodyAt(w) {         // pick a drive-aisle LINE (not an end node) → si, for moving the whole lane
+  const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return -1;
+  const m = toScreen(w);
+  for (let si = 0; si < park.spines.length; si++) {
+    const ln = park.spines[si].line;
+    if (ln.some(n => { const s = toScreen(n); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;   // near an end → that's the node grab
+    for (let i = 0; i + 1 < ln.length; i++) if (distSegPx(m, toScreen(ln[i]), toScreen(ln[i + 1])) < 8) return si;
+  }
+  return -1;
+}
+function boundaryEdgeAt(w) {      // pick a boundary EDGE (not a corner) → edge index i, for stretching the site
+  if (!pickable('site') || S.boundary.length < 2) return -1;
+  const m = toScreen(w);
+  if (S.boundary.some(v => { const s = toScreen(v); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) return -1;   // near a corner → vertex grab
+  for (let i = 0; i < S.boundary.length; i++) { const A = toScreen(S.boundary[i]), B = toScreen(S.boundary[(i + 1) % S.boundary.length]); if (distSegPx(m, A, B) < 8) return i; }
+  return -1;
+}
+function bldgEdgeAt(w) {          // pick a building EDGE (not a corner) → {bi, ei}
+  if (!S.layers.building.vis || S.layers.building.lock) return null;
+  const m = toScreen(w);
+  for (let bi = 0; bi < S.buildings.length; bi++) {
+    const poly = S.buildings[bi].poly;
+    if (poly.some(v => { const s = toScreen(v); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;   // near a corner → corner grab
+    for (let ei = 0; ei < poly.length; ei++) { const A = toScreen(poly[ei]), B = toScreen(poly[(ei + 1) % poly.length]); if (distSegPx(m, A, B) < 8) return { bi, ei }; }
+  }
   return null;
 }
 function spineToRect(line, W) {   // rebuild a drive-aisle rect from its centre-line + width (for the grey lane render)
@@ -1577,21 +1608,19 @@ cv.addEventListener('pointerdown', e => {
     }
     // SPINE NODE — grab a drive-aisle/connector end node (after boundary corners; spine nodes are mostly mid-edge)
     { const sn = spineNodeAt(w); if (sn) { S.dragSpine = sn; S.selAisle = sn.si; S.selStall = null; S.selRoad = null; showAislePopup(sn.si); draw(); return; } }
+    // SPINE BODY — grab the whole aisle line to MOVE the lane (both ends + its stalls follow)
+    { const sb = spineBodyAt(w); if (sb >= 0) { S.dragSpineBody = { si: sb, last: w }; S.selAisle = sb; S.selStall = null; S.selRoad = null; showAislePopup(sb); draw(); return; } }
+    // BOUNDARY EDGE — drag a whole edge to stretch the site (a click without a drag = the site-mode setback popup)
+    { const be = boundaryEdgeAt(w); if (be >= 0) { S.dragBoundaryEdge = { i: be, last: w, moved: false, reflow: (S.mode === 'site' ? !!S.site : !!S.solution) }; return; } }
     // ROAD EDIT — grab the road body to move the whole road (also selects it for the width / delete popup).
     { const rb = roadBodyAt(w); if (rb) { S.dragRoad = { ri: rb.ri, body: true, last: w }; S.selRoad = rb.ri; S.selStall = null; showRoadPopup(rb.ri); draw(); return; } }
-    // MASSING — grab a building footprint corner to reshape it (parking re-packs on release). Small target → before body-select.
+    // MASSING — grab a building footprint corner to reshape it (parking re-packs on release). Small target → before edge/body.
     { const bv = bldgVertexAt(w); if (bv) { S.dragBldgVtx = bv; S.selBuilding = S.buildings[bv.bi]; S.selStall = null; refreshBldgPanel(); draw(); return; } }
-    // click a building body to select it (opens the massing panel — use / floors / appearance)
+    // MASSING — grab a building EDGE to move that whole side
+    { const be = bldgEdgeAt(w); if (be) { S.dragBldgEdge = { bi: be.bi, ei: be.ei, last: w }; S.selBuilding = S.buildings[be.bi]; S.selStall = null; refreshBldgPanel(); draw(); return; } }
+    // grab a building BODY to MOVE the whole building (a click without a drag = just select for the massing panel)
     if (pickable('building')) {
-      for (const b of S.buildings) if (PS.pointInPoly(w, b.poly)) { S.selBuilding = b; S.selStall = null; refreshBldgPanel(); draw(); return; }
-    }
-    // site mode: click a boundary edge to override its setback
-    if (S.mode === 'site' && S.boundary.length >= 3 && pickable('site')) {
-      const m = toScreen(w);
-      for (let i = 0; i < S.boundary.length; i++) {
-        const A = toScreen(S.boundary[i]), B = toScreen(S.boundary[(i + 1) % S.boundary.length]);
-        if (distSegPx(m, A, B) < 8) { S.selEdge = i; S.selStall = null; S.selBuilding = null; showEdgePopup(i); draw(); return; }
-      }
+      for (const b of S.buildings) if (PS.pointInPoly(w, b.poly)) { S.dragBldgBody = { bi: S.buildings.indexOf(b), last: w, moved: false }; S.selBuilding = b; S.selStall = null; refreshBldgPanel(); draw(); return; }
     }
     // click stall to edit
     if (S.solution && pickable('parking')) {
@@ -1650,6 +1679,28 @@ cv.addEventListener('pointermove', e => {
     if (sp) { sp.line[S.dragSpine.ni] = snap(w); retileSpine(S.dragSpine.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
     return;
   }
+  if (S.dragSpineBody) {                             // move a WHOLE drive aisle (translate the line; its stalls follow)
+    const park = activePark(), sp = park && park.spines && park.spines[S.dragSpineBody.si];
+    if (sp) { const d = { x: w.x - S.dragSpineBody.last.x, y: w.y - S.dragSpineBody.last.y }; sp.line = sp.line.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragSpineBody.last = w; retileSpine(S.dragSpineBody.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
+    return;
+  }
+  if (S.dragBoundaryEdge) {                          // stretch a boundary EDGE (move both its corners); parking re-flows on release
+    const e = S.dragBoundaryEdge, n = S.boundary.length, d = { x: w.x - e.last.x, y: w.y - e.last.y };
+    S.boundary[e.i] = { x: S.boundary[e.i].x + d.x, y: S.boundary[e.i].y + d.y };
+    S.boundary[(e.i + 1) % n] = { x: S.boundary[(e.i + 1) % n].x + d.x, y: S.boundary[(e.i + 1) % n].y + d.y };
+    e.last = w; e.moved = true; S.solution = null; S.site = null; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw();
+    return;
+  }
+  if (S.dragBldgEdge) {                              // move a building EDGE (both its corners)
+    const b = S.buildings[S.dragBldgEdge.bi];
+    if (b) { const poly = b.poly, n = poly.length, ei = S.dragBldgEdge.ei, d = { x: w.x - S.dragBldgEdge.last.x, y: w.y - S.dragBldgEdge.last.y }; poly[ei] = { x: poly[ei].x + d.x, y: poly[ei].y + d.y }; poly[(ei + 1) % n] = { x: poly[(ei + 1) % n].x + d.x, y: poly[(ei + 1) % n].y + d.y }; S.dragBldgEdge.last = w; updateMassInfo(b); draw(); }
+    return;
+  }
+  if (S.dragBldgBody) {                              // move a WHOLE building (footprint + its courtyards)
+    const b = S.buildings[S.dragBldgBody.bi];
+    if (b) { const d = { x: w.x - S.dragBldgBody.last.x, y: w.y - S.dragBldgBody.last.y }; b.poly = b.poly.map(p => ({ x: p.x + d.x, y: p.y + d.y })); (b.voids || []).forEach(v => { for (let k = 0; k < v.length; k++) v[k] = { x: v[k].x + d.x, y: v[k].y + d.y }; }); S.dragBldgBody.last = w; S.dragBldgBody.moved = true; updateMassInfo(b); draw(); }
+    return;
+  }
   if (S.draft) draw();
 });
 
@@ -1670,6 +1721,28 @@ window.addEventListener('pointerup', () => {
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
     draw(); commit();
+    return;
+  }
+  if (S.dragSpineBody) {                              // whole-aisle move done → clean re-tile
+    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, true);
+    (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
+    const park = activePark(); if (park && park.spines && park.spines[si]) showAislePopup(si);
+    draw(); commit();
+    return;
+  }
+  if (S.dragBoundaryEdge) {                           // boundary edge released → re-flow parking, or (no drag, site mode) setback popup
+    const e = S.dragBoundaryEdge; S.dragBoundaryEdge = null;
+    if (e.moved) { if (e.reflow && S.boundary.length >= 3) (S.mode === 'site' ? doSolveSite() : doSolve()); else commit(); }
+    else if (S.mode === 'site' && S.boundary.length >= 3) { S.selEdge = e.i; S.selStall = null; S.selBuilding = null; showEdgePopup(e.i); draw(); }
+    return;
+  }
+  if (S.dragBldgEdge) {                               // building edge moved → re-pack
+    S.dragBldgEdge = null; const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution); resolveActive(); if (!reSolve) { updateMetrics(); commit(); }
+    return;
+  }
+  if (S.dragBldgBody) {                               // building moved → re-pack (a click without a move was just a select)
+    const moved = S.dragBldgBody.moved; S.dragBldgBody = null;
+    if (moved) { const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution); resolveActive(); if (!reSolve) { updateMetrics(); commit(); } }
     return;
   }
   if (S.dragBldgVtx) {                               // footprint corner moved → re-pack parking around the new massing
