@@ -393,11 +393,11 @@ function draw() {
     if (S.tool === 'select' && !S.is3d && park.spines) {     // editable aisle SPINES — drag an end node to reshape the lane; stalls re-attach
       ctx.save();
       for (let si = 0; si < park.spines.length; si++) {
-        const sp = park.spines[si], a = toScreen(sp.line[0]), b = toScreen(sp.line[1]), sel = S.selAisle === si, conn = sp.kind === 'conn';
+        const sp = park.spines[si], pts = sp.line.map(toScreen), sel = S.selAisle === si, conn = sp.kind === 'conn';
         const col = conn ? '251,146,60' : '56,189,248';                   // connectors orange, drive aisles blue
         ctx.setLineDash([5, 4]); ctx.lineWidth = sel ? 2 : 1.1; ctx.strokeStyle = `rgba(${col},${sel ? .95 : .42})`;
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
-        for (const s of [a, b]) { ctx.beginPath(); ctx.arc(s.x, s.y, sel ? 6 : 4.5, 0, 6.2832); ctx.fillStyle = `rgb(${col})`; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = '#0f172a'; ctx.stroke(); }
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke(); ctx.setLineDash([]);
+        for (let i = 0; i < pts.length; i++) { const mid = i > 0 && i < pts.length - 1; ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, sel ? 6 : 4.5, 0, 6.2832); ctx.fillStyle = mid ? '#fbbf24' : `rgb(${col})`; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = '#0f172a'; ctx.stroke(); }   // bend nodes yellow
       }
       ctx.restore();
     }
@@ -652,7 +652,12 @@ function aisleSpine(poly) {       // derive a drive aisle's editable CENTRELINE 
 }
 function deriveSpines(park) {     // after a pack: every drive aisle + connector becomes an editable spine; tag stalls with their aisle spine
   if (!park || !park.aisles) return;
-  park.spines = park.aisles.map((a, i) => Object.assign(aisleSpine(a.poly), { kind: 'aisle', src: i }));   // aisle spines FIRST (index = aisle index)
+  const prevAisle = (park.spines || []).filter(s => s.kind === 'aisle');   // keep any hand-bent aisle centre-lines across a re-derive (index-aligned: aisles aren't re-ordered by the light reconnect)
+  park.spines = park.aisles.map((a, i) => {                                  // aisle spines FIRST (index = aisle index)
+    const old = prevAisle[i];
+    if (old && old.line && old.line.length >= 2) return { line: old.line, width: old.width, sides: old.sides, kind: 'aisle', src: i };   // preserve manual bend
+    return Object.assign(aisleSpine(a.poly), { kind: 'aisle', src: i });
+  });
   (park.connectors || []).forEach((c, i) => { const poly = c.poly || c; if (poly && poly.length >= 3) park.spines.push(Object.assign(aisleSpine(poly), { kind: 'conn', src: i })); });
   for (const s of park.stalls) { s.spine = -1; for (let i = 0; i < park.aisles.length; i++) if (s.aprobe && PS.pointInPoly(s.aprobe, park.aisles[i].poly)) { s.spine = i; break; } }
   if (S.aisleEdits) for (let i = 0; i < park.aisles.length; i++)   // honour single-load edits so a later spine drag keeps one side
@@ -707,10 +712,22 @@ function obstacleEdgeAt(w) {      // pick an obstacle EDGE (not a corner) → {o
   }
   return null;
 }
-function spineToRect(line, W) {   // rebuild a drive-aisle rect from its centre-line + width (for the grey lane render)
-  const a = line[0], b = line[line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-  const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x }, h = W / 2;
-  return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
+function spineToRect(line, W) {   // build the grey lane polygon from its centre-line + width — a rect for a straight line, a bent strip for a polyline
+  const h = W / 2;
+  if (line.length <= 2) {         // straight (fast path, identical to before)
+    const a = line[0], b = line[line.length - 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
+    return [{ x: a.x + per.x * h, y: a.y + per.y * h }, { x: b.x + per.x * h, y: b.y + per.y * h }, { x: b.x - per.x * h, y: b.y - per.y * h }, { x: a.x - per.x * h, y: a.y - per.y * h }];
+  }
+  const norm = i => {             // node normal = averaged perpendicular of the adjacent segment(s)
+    let nx = 0, ny = 0;
+    if (i > 0) { const a = line[i - 1], b = line[i], L = Math.hypot(b.x - a.x, b.y - a.y) || 1; nx += -(b.y - a.y) / L; ny += (b.x - a.x) / L; }
+    if (i < line.length - 1) { const a = line[i], b = line[i + 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1; nx += -(b.y - a.y) / L; ny += (b.x - a.x) / L; }
+    const L = Math.hypot(nx, ny) || 1; return { x: nx / L, y: ny / L };
+  };
+  const left = [], right = [];
+  for (let i = 0; i < line.length; i++) { const n = norm(i); left.push({ x: line[i].x + n.x * h, y: line[i].y + n.y * h }); right.push({ x: line[i].x - n.x * h, y: line[i].y - n.y * h }); }
+  return left.concat(right.reverse());
 }
 function spineBlockers() { return bPolys().concat(S.obstacles || [], S.roads || []); }
 function spineKeptSide(sp, park, aIdx) {   // single-loaded aisle → which side of the centre-line the surviving stalls sit (+1 / -1), 0 if none
@@ -731,7 +748,8 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
   const aIdx = sp.src;                                                   // aisle index (= si, since aisle spines come first)
   const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: sp.width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
   const others = park.stalls.filter(s => s.spine !== si);                // every OTHER aisle's stalls
-  let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
+  const blk = spineBlockers().concat((park.connectors || []).map(c => c.poly || c));   // treat cross-aisles/ramps as no-go → leave a gap where a drive crosses (matches the original pack, avoids the under-drive prune)
+  let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, blk, sp.sides || 0);
   if (avoidOverlap) fresh = fresh.filter(ns => !others.some(os => PS.polyOverlap(ns.poly, os.poly)));   // drop stalls overlapping a neighbour lane
   fresh.forEach(s => s.spine = si);
   park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
@@ -760,6 +778,19 @@ function reconnectNetwork() {
     return under / Math.max(inside, 1) <= 0.08;
   });
   deriveSpines(park);                                  // refresh editable spines + re-tag stalls + keep single-load sides
+}
+function insertSpineNode(si, w) {   // add a bend node into aisle spine si at the point on its centre-line nearest world point w
+  const park = activePark(), sp = park && park.spines && park.spines[si]; if (!sp || sp.kind !== 'aisle') return false;
+  const ln = sp.line; let best = -1, bestD = 1e9, bestPt = null;
+  for (let i = 0; i + 1 < ln.length; i++) {
+    const a = ln[i], b = ln[i + 1], L2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+    let t = ((w.x - a.x) * (b.x - a.x) + (w.y - a.y) * (b.y - a.y)) / L2; t = Math.max(0, Math.min(1, t));
+    const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t, d = Math.hypot(w.x - px, w.y - py);
+    if (d < bestD) { bestD = d; best = i; bestPt = { x: px, y: py }; }
+  }
+  if (best < 0) return false;
+  ln.splice(best + 1, 0, bestPt);                                          // new node between the two it sits between
+  retileSpine(si, true); reconnectNetwork(); return true;
 }
 function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
   const c = PS.centroid(poly); let dir = { x: 1, y: 0 }, best = -1;
@@ -1872,6 +1903,19 @@ cv.addEventListener('dblclick', e => {
     return;
   }
   if (!S.solution || !pickable('parking')) return;
+  // double-click a BEND node (mid node) → remove it (straighten); double-click the lane body → add a bend node you can drag
+  const park = activePark();
+  if (park && park.spines) {
+    const sn = spineNodeAt(w);
+    if (sn && park.spines[sn.si] && park.spines[sn.si].kind === 'aisle') {
+      const ln = park.spines[sn.si].line;
+      if (sn.ni > 0 && sn.ni < ln.length - 1) { ln.splice(sn.ni, 1); retileSpine(sn.si, true); reconnectNetwork(); S.selAisle = sn.si; updateMetrics(); draw(); commit(); toast('已移除彎折點'); return; }
+    }
+    const sb = spineBodyAt(w);
+    if (sb >= 0 && park.spines[sb] && park.spines[sb].kind === 'aisle' && insertSpineNode(sb, w)) {
+      S.selAisle = sb; updateMetrics(); draw(); commit(); toast('已加彎折點 — 拖動黃點可彎曲車道'); return;
+    }
+  }
   for (const s of S.solution.stalls) {
     if (PS.pointInPoly(w, s.poly)) {
       const order = ['standard', 'compact', 'ev', 'ada', 'trailer'];

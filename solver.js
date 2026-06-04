@@ -282,24 +282,35 @@ function packAtAngle(theta, ctx) {
 // the boundary + blockers. This is the editable-spine primitive — re-run it when a spine node is dragged so
 // the stalls re-attach to the reshaped aisle. `sides`: 0/undefined = both (double-loaded), +1 / -1 = single.
 function tileStallsAlongSpine(line, p, boundary, blockers, sides) {
-  const a = line[0], b = line[line.length - 1];
-  const L = Math.hypot(b.x - a.x, b.y - a.y); if (L < 2) return [];
-  const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
+  // `line` may be a multi-node POLYLINE (a bent drive aisle). Tile each straight segment independently with
+  // rectangular stalls; bends leave a natural wedge gap on the outside and crowd on the inside — inner-bend
+  // stalls that collide with an already-placed one are dropped. A straight 2-node line tiles exactly as before.
   const W = p.aisle, D = p.vpd, w = p.stallW, setback = (p.setback || 0) + (p.greenBuffer || 0), blk = blockers || [];
-  const toWorld = (t, q) => ({ x: a.x + dir.x * t + per.x * q, y: a.y + dir.y * t + per.y * q });
+  const offBoundary = c => { for (let j = 0, k = boundary.length - 1; j < boundary.length; k = j++) if (distPtSeg(c, boundary[k], boundary[j]) < setback) return true; return false; };
   const out = [];
   for (const s of (sides === 1 ? [1] : sides === -1 ? [-1] : [1, -1])) {
     const qIn = s * (W / 2), qOut = s * (W / 2 + D);                        // inner (aisle edge) → outer (wall)
-    for (let t = 0; t + w <= L + 0.5; t += w) {
-      const corners = [toWorld(t, qIn), toWorld(t + w, qIn), toWorld(t + w, qOut), toWorld(t, qOut)];
-      if (!polyInPoly(corners, boundary)) continue;
-      if (setback > 0 && corners.some(c => { for (let j = 0, k = boundary.length - 1; j < boundary.length; k = j++) if (distPtSeg(c, boundary[k], boundary[j]) < setback) return true; return false; })) continue;
-      if (blk.some(bl => polyOverlap(corners, bl))) continue;
-      const wc = polyCenter(corners);
-      out.push({ poly: corners, type: 'standard', compact: false, cx: wc.x, cy: wc.y, aprobe: toWorld(t + w / 2, s * (W / 2 - 0.5)) });
+    for (let seg = 0; seg + 1 < line.length; seg++) {
+      const a = line[seg], b = line[seg + 1];
+      const L = Math.hypot(b.x - a.x, b.y - a.y); if (L < 2) continue;
+      const dir = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, per = { x: -dir.y, y: dir.x };
+      const toWorld = (t, q) => ({ x: a.x + dir.x * t + per.x * q, y: a.y + dir.y * t + per.y * q });
+      for (let t = 0; t + w <= L + 0.5; t += w) {
+        const corners = [toWorld(t, qIn), toWorld(t + w, qIn), toWorld(t + w, qOut), toWorld(t, qOut)];
+        if (!polyInPoly(corners, boundary)) continue;
+        if (setback > 0 && corners.some(offBoundary)) continue;
+        if (blk.some(bl => polyOverlap(corners, bl))) continue;
+        const wc = polyCenter(corners);
+        out.push({ poly: corners, type: 'standard', compact: false, cx: wc.x, cy: wc.y, aprobe: toWorld(t + w / 2, s * (W / 2 - 0.5)), _side: s, _seg: seg });
+      }
     }
   }
-  return out;
+  // at a bend the two segments' stalls crowd on the inside — drop a stall that overlaps a kept stall from a
+  // DIFFERENT segment (same side). Consecutive stalls WITHIN a segment merely touch, so they're never dropped.
+  const keep = [];
+  for (const st of out) { if (!keep.some(k => k._side === st._side && k._seg !== st._seg && polyOverlap(k.poly, st.poly))) keep.push(st); }
+  for (const k of keep) { delete k._side; delete k._seg; }
+  return keep;
 }
 
 /* --------------------------- orientation search -------------------------- */
