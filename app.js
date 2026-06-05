@@ -661,7 +661,7 @@ function deriveSpines(park) {     // after a pack: every drive aisle + connector
   (park.connectors || []).forEach((c, i) => { const poly = c.poly || c; if (poly && poly.length >= 3) park.spines.push(Object.assign(aisleSpine(poly), { kind: 'conn', src: i })); });
   for (const s of park.stalls) { s.spine = -1; for (let i = 0; i < park.aisles.length; i++) if (s.aprobe && PS.pointInPoly(s.aprobe, park.aisles[i].poly)) { s.spine = i; break; } }
   if (S.aisleEdits) for (let i = 0; i < park.aisles.length; i++)   // honour single-load edits so a later spine drag keeps one side
-    if (S.aisleEdits[aisleKey(park.aisles[i].poly)] === 'single' && park.spines[i]) park.spines[i].sides = spineKeptSide(park.spines[i], park, i);
+    { const _ae = S.aisleEdits[aisleKey(park.aisles[i].poly)]; if ((_ae === 'single' || _ae === 'single2') && park.spines[i]) park.spines[i].sides = spineKeptSide(park.spines[i], park, i); }
 }
 function spineNodeAt(w) {         // pick a draggable spine end-node near w → {si, ni} or null
   const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return null;
@@ -843,18 +843,19 @@ function applyAisleEdits(park) {
     const op = E[aisleKey(park.aisles[i].poly)]; if (!op) continue;
     const ais = park.aisles[i].poly;
     if (op === 'remove') { park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais))); park.aisles.splice(i, 1); }
-    else if (op === 'single') { const ax = aisleAxis(ais); park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais)) || ((s.cx - ax.c.x) * ax.per.x + (s.cy - ax.c.y) * ax.per.y) >= 0); }
+    else if (op === 'single' || op === 'single2') { const ax = aisleAxis(ais), sgn = op === 'single2' ? -1 : 1; park.stalls = park.stalls.filter(s => !(s.aprobe && PS.pointInPoly(s.aprobe, ais)) || (((s.cx - ax.c.x) * ax.per.x + (s.cy - ax.c.y) * ax.per.y) * sgn >= 0)); }   // single = +side, single2 = flipped (−side)
   }
 }
 function setAisleEdit(i, op) {     // record (or clear, op=null) an override for an aisle, then apply/restore
   const park = activePark(); if (!park || !park.aisles[i]) return;
   const k = aisleKey(park.aisles[i].poly); S.aisleEdits = S.aisleEdits || {};
   if (op) S.aisleEdits[k] = op; else delete S.aisleEdits[k];
-  if (op === 'single') {          // apply now to the live solution (instant); keep the aisle selected
+  if (op === 'single' || op === 'single2') {          // apply now to the live solution (instant); keep the aisle selected
+    if (park.spines && park.spines[i] && park.spines[i].kind === 'aisle' && park.spines[i].sides) { park.spines[i].sides = 0; retileSpine(i, true); }   // restore BOTH rows first so the side-filter has both sides to pick from (lets 翻面 re-flip, and re-單邊停 after a flip, instead of filtering an already-emptied side to 0)
     applyAisleEdits(park);
     if (park.spines && park.spines[i]) park.spines[i].sides = spineKeptSide(park.spines[i], park, i);   // so a later spine drag won't revert to double
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); commit(); showAislePopup(i); draw();
-    toast('已改為單邊停車（再按「雙邊停」可還原）');
+    toast('已改為單邊停車（再按「翻面」換邊、「雙邊停」還原）');
   } else {                        // remove, or restore-to-double → re-pack so removed stalls come back / drop cleanly
     S.selAisle = null; hideAislePopup(); resolveActive();
     toast(op === 'remove' ? '已移除這條場內道路與車位' : '已還原雙邊停車');
@@ -863,6 +864,12 @@ function setAisleEdit(i, op) {     // record (or clear, op=null) an override for
 function removeAisle(i) { setAisleEdit(i, 'remove'); }
 function singleLoadAisle(i) { setAisleEdit(i, 'single'); }
 function restoreAisle(i) { setAisleEdit(i, null); }
+function flipAisle(i) {              // single-loaded 場內道路 → swap which side keeps its stalls (TestFit "flip")
+  const park = activePark(); if (!park || !park.aisles[i]) return;
+  const cur = (S.aisleEdits || {})[aisleKey(park.aisles[i].poly)];
+  if (cur !== 'single' && cur !== 'single2') { toast('先按「單邊停」，才能翻到另一邊'); return; }
+  setAisleEdit(i, cur === 'single' ? 'single2' : 'single');
+}
 function roadChanged() {          // re-derive strips, re-pack around the roads, and record one undo step
   rebuildRoadStrips();
   const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
@@ -1909,9 +1916,13 @@ cv.addEventListener('contextmenu', e => {
     const eh = entranceAt(w);
     if (eh) { S.entrances.splice(S.entrances.indexOf(eh), 1); S.selEntrance = null; draw(); toast('已刪除出入口'); resolveActive(); return; }
   }
-  if (S.tool === 'select') {                       // right-click a road → delete it
+  if (S.tool === 'select') {                       // right-click a 場外道路 → delete it
     const rh = roadVertexAt(w) || roadBodyAt(w);
-    if (rh) { S.roadLines.splice(rh.ri, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除道路'); return; }
+    if (rh) { S.roadLines.splice(rh.ri, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除場外道路'); return; }
+  }
+  if (S.tool === 'select' && pickable('parking')) {   // right-click a 場內道路 → open its manual menu (單邊停/翻面/移除), TestFit-style
+    const ai = aisleAt(w);
+    if (ai >= 0) { S.selAisle = ai; S.selStall = null; hideRoadPopup(); showAislePopup(ai); draw(); return; }
   }
   if (S.tool === 'select' && S.solution && pickable('parking')) {
     // right click stall -> delete
@@ -3177,6 +3188,7 @@ $('#roadDel').onclick = () => {
 // drive-aisle editor buttons (manual circulation editing)
 $('#aisleRemove').onclick = () => { if (S.selAisle != null) removeAisle(S.selAisle); };
 $('#aisleSingle').onclick = () => { if (S.selAisle != null) singleLoadAisle(S.selAisle); };
+$('#aisleFlip').onclick = () => { if (S.selAisle != null) flipAisle(S.selAisle); };
 $('#aisleDouble').onclick = () => { if (S.selAisle != null) restoreAisle(S.selAisle); };
 
 /* ------------------- modal: generative options + compare ----------------- */
