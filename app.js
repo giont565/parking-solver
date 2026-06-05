@@ -350,23 +350,21 @@ function draw() {
   if (park && S.layers.parking.vis) {
     ctx.save();
     if (S.boundary.length >= 3) { pathPoly(S.boundary, true); ctx.clip(); }
-    // DRIVE NETWORK — round-stroke every lane centre-line (aisles + connectors) so the connections are SMOOTH
-    // (rounded curb returns), NOT hard "two straight lines" corners. Same round join/cap trick as the user roads:
-    // the round caps where an aisle meets a cross-lane overlap into one continuous fillet.
+    // DRIVE NETWORK — a CONTINUOUS, unbroken road surface with smooth rounded junctions:
+    // (1) FILL every lane rect — overlapping aisle/connector rects tile into ONE solid asphalt sheet, so the
+    //     roads never break where segments meet (fixes "用線段聯繫會斷開道路"). (2) round-cap STROKE each
+    //     centre-line on top — the round caps fillet the junction corners into smooth curb-returns. Opaque
+    //     colours → the fill and the rounding stroke never compound into uneven patches.
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     const _drvSc = (() => { const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }); return Math.hypot(b.x - a.x, b.y - a.y); })();
     const _trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
-    if (park.spines && park.spines.length) {
-      for (const sp of park.spines) {
-        const ramp = sp.kind === 'conn' && park.connectors[sp.src] && park.connectors[sp.src].type;   // entrance ramp keeps a faint green hint
-        ctx.strokeStyle = ramp ? 'rgba(56,142,104,.36)' : 'rgba(116,130,150,.32)';
-        ctx.lineWidth = Math.max((sp.width || 18) * _drvSc, 2);
-        _trace(sp.line); ctx.stroke();
-      }
-    } else {                                                          // fallback (legacy save / before spines derived): flat fills
-      ctx.fillStyle = 'rgba(116,130,150,.30)';
-      for (const a of park.aisles) { pathPoly(a.poly, true); ctx.fill(); }
-      for (const lane of (park.connectors || [])) { const poly = lane.poly || lane; ctx.fillStyle = lane.type ? 'rgba(56,142,104,.34)' : 'rgba(116,130,150,.30)'; pathPoly(poly, true); ctx.fill(); }
+    const ASPH = '#566178', RAMP = '#4a7058';                         // entrance ramp keeps a faint green tint
+    for (const a of park.aisles) { ctx.fillStyle = ASPH; pathPoly(a.poly, true); ctx.fill(); }
+    for (const lane of (park.connectors || [])) { const poly = lane.poly || lane; ctx.fillStyle = lane.type ? RAMP : ASPH; pathPoly(poly, true); ctx.fill(); }
+    if (park.spines) for (const sp of park.spines) {
+      const ramp = sp.kind === 'conn' && park.connectors[sp.src] && park.connectors[sp.src].type;
+      ctx.strokeStyle = ramp ? RAMP : ASPH; ctx.lineWidth = Math.max((sp.width || 18) * _drvSc, 2);
+      _trace(sp.line); ctx.stroke();
     }
     ctx.restore();
     if (S.selAisle != null && park.aisles[S.selAisle] && S.tool === 'select') {     // highlight the selected drive aisle
