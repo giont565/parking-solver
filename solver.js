@@ -996,6 +996,7 @@ function solve(input) {
   const access = input.params.access || 'multi';                // open | single | multi
   const ents = access === 'single' ? (input.entrances || []).slice(0, 1) : (input.entrances || []);
   buildCirculation(best, boundary, ents, p.aisle, access === 'open', input.buildings || [], input.obstacles || []);
+  best._circ = { boundary, entrances: ents, aisle: p.aisle, open: access === 'open', buildings: input.buildings || [], obstacles: input.obstacles || [] };   // remember EXACTLY what we packed against, so a later manual lane edit can losslessly RE-LINK the same network — critical in site mode where the parking boundary/blockers ≠ the live globals
 
   // USER ROADS are DRIVES, not no-go zones: the grid packs right up to both sides and stays reachable via
   // its own aisles — we only clear the stalls that physically sit ON the road (cars don't park on the drive).

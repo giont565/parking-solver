@@ -764,11 +764,16 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
 // on a THROWAWAY copy purely to get fresh entrance ramps, then graft ONLY those ramps onto the real layout —
 // every stall and every cross-aisle is kept (no aisle re-clip, no stall pruning). Lossless re-link.
 function reconnectNetwork() {
-  if (S.mode === 'site') return;                       // site-mode parking carves its own boundary/blockers; skip for now
-  const park = S.solution;
-  if (!park || !park.aisles || !park.aisles.length || !S.entrances || !S.entrances.length || !window.PS.buildCirculation) return;
+  const park = activePark();
+  if (!park || !park.aisles || !park.aisles.length || !window.PS.buildCirculation) return;
+  // circulation inputs: parking mode re-links against the live globals; site mode replays the EXACT boundary /
+  // blockers / entrances solveSite packed this lot against (stashed on park._circ) — they ≠ the site globals.
+  let boundary, ents, aisleW, open, builds, obs;
+  if (S.mode === 'site') { const c = park._circ; if (!c) return; boundary = c.boundary; ents = c.entrances; aisleW = c.aisle; open = c.open; builds = c.buildings || []; obs = c.obstacles || []; }
+  else { boundary = S.boundary; ents = S.entrances; aisleW = S.params.aisle; open = S.params.access === 'open'; builds = bPolys(); obs = S.obstacles || []; }
+  if (!boundary || boundary.length < 3 || !ents || !ents.length) return;
   const clone = { aisles: park.aisles.map(a => ({ poly: a.poly.map(p => ({ x: p.x, y: p.y })) })), stalls: park.stalls.map(s => ({ cx: s.cx, cy: s.cy, aprobe: s.aprobe, poly: s.poly })), theta: park.theta };
-  PS.buildCirculation(clone, S.boundary, S.entrances, S.params.aisle, S.params.access === 'open', bPolys(), S.obstacles || []);
+  PS.buildCirculation(clone, boundary, ents, aisleW, open, builds, obs);
   const ramps = (clone.connectors || []).filter(c => c.ent != null || c.type);          // entrance ramps only
   const cross = (park.connectors || []).filter(c => c.ent == null && !c.type);           // keep the real cross-aisles
   park.connectors = cross.concat(ramps);
@@ -1907,25 +1912,25 @@ cv.addEventListener('dblclick', e => {
     resolveActive();                 // rebuild the drive lane so its flow arrows match
     return;
   }
-  if (!S.solution || !pickable('parking')) return;
+  if (!activePark() || !pickable('parking')) return;   // works in both modes — activePark() is S.solution (parking) or S.site.parkSol (site)
   // double-click a BEND node (mid node) → remove it (straighten); double-click the lane body → add a bend node you can drag
   const park = activePark();
   if (park && park.spines) {
     const sn = spineNodeAt(w);
     if (sn && park.spines[sn.si] && park.spines[sn.si].kind === 'aisle') {
       const ln = park.spines[sn.si].line;
-      if (sn.ni > 0 && sn.ni < ln.length - 1) { ln.splice(sn.ni, 1); retileSpine(sn.si, true); reconnectNetwork(); S.selAisle = sn.si; updateMetrics(); draw(); commit(); toast('已移除彎折點'); return; }
+      if (sn.ni > 0 && sn.ni < ln.length - 1) { ln.splice(sn.ni, 1); retileSpine(sn.si, true); reconnectNetwork(); S.selAisle = sn.si; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); toast('已移除彎折點'); return; }
     }
     const sb = spineBodyAt(w);
     if (sb >= 0 && park.spines[sb] && park.spines[sb].kind === 'aisle' && insertSpineNode(sb, w)) {
-      S.selAisle = sb; updateMetrics(); draw(); commit(); toast('已加彎折點 — 拖動黃點可彎曲車道'); return;
+      S.selAisle = sb; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); toast('已加彎折點 — 拖動黃點可彎曲車道'); return;
     }
   }
-  for (const s of S.solution.stalls) {
+  for (const s of park.stalls) {                       // park = activePark() above → stall-type cycle works in site mode too (no S.solution crash)
     if (PS.pointInPoly(w, s.poly)) {
       const order = ['standard', 'compact', 'ev', 'ada', 'trailer'];
       s.type = order[(order.indexOf(s.type) + 1) % order.length];
-      updateMetrics(); draw(); commit(); return;
+      (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); return;
     }
   }
 });
