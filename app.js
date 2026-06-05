@@ -362,30 +362,24 @@ function draw() {
     //   entrance drive 出入口引道 = green · cross-connector 橫向連接道 = orange · other asphalt = grey
     if (park.connectors) for (const lane of park.connectors) {
       const poly = lane.poly || lane;                 // back-compat
-      const road = lane.type      ? { f: 'rgba(34,197,94,.80)',  s: 'rgba(74,222,128,.95)' }
-                 : lane.perimeter  ? { f: 'rgba(245,158,11,.82)', s: 'rgba(251,191,36,.95)' }
-                 :                    { f: 'rgba(51,61,79,.78)',  s: 'rgba(148,163,184,.5)' };
+      // ONE calm, unified asphalt drive network (quiet like TestFit — not 3 loud colours); the entrance ramp
+      // keeps only a faint green hint so you can still find the gate. No loud yellow centre-dash.
+      const road = lane.type ? { f: 'rgba(56,142,104,.34)', s: 'rgba(110,190,150,.5)' }
+                             : { f: 'rgba(116,130,150,.30)', s: 'rgba(148,163,184,.4)' };
       pathPoly(poly, true); ctx.fillStyle = road.f; ctx.fill();
-      ctx.lineWidth = 1.5; ctx.strokeStyle = road.s; ctx.stroke();
+      ctx.lineWidth = 1; ctx.strokeStyle = road.s; ctx.stroke();
       const a0 = toScreen({ x: (poly[0].x + poly[1].x) / 2, y: (poly[0].y + poly[1].y) / 2 });
       const a1 = toScreen({ x: (poly[2].x + poly[3].x) / 2, y: (poly[2].y + poly[3].y) / 2 });
-      ctx.save();                                     // dashed centre line = two lanes
-      ctx.setLineDash([9, 8]); ctx.strokeStyle = 'rgba(250,204,21,.75)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(a0.x, a0.y); ctx.lineTo(a1.x, a1.y); ctx.stroke();
-      ctx.restore();
       const ux = a1.x - a0.x, uy = a1.y - a0.y, len = Math.hypot(ux, uy) || 1;
       const px = -uy / len, py = ux / len;
-      const flow = (from, to, off) => {
+      const flow = (from, to, off) => {                                     // sparse, low-key flow hint (full flow viz is the 🚦動線 layer)
         const ang = Math.atan2(to.y - from.y, to.x - from.x), L = Math.hypot(to.x - from.x, to.y - from.y);
-        const n = Math.max(1, Math.floor(L / 85));
-        ctx.strokeStyle = 'rgba(226,232,240,.9)'; ctx.lineWidth = 2;
-        for (let k = 1; k <= n; k++) {
-          const t = k / (n + 1);
-          arrow({ x: from.x + (to.x - from.x) * t + px * off, y: from.y + (to.y - from.y) * t + py * off }, ang, 7);
-        }
+        const n = Math.max(1, Math.floor(L / 150));
+        ctx.strokeStyle = 'rgba(203,213,225,.30)'; ctx.lineWidth = 1.3;
+        for (let k = 1; k <= n; k++) { const t = k / (n + 1); arrow({ x: from.x + (to.x - from.x) * t + px * off, y: from.y + (to.y - from.y) * t + py * off }, ang, 5); }
       };
       if (S.params.oneway) flow(a0, a1, 0);           // single direction = one-way drive
-      else { flow(a0, a1, 5); flow(a1, a0, -5); }     // two-way road
+      else { flow(a0, a1, 4); flow(a1, a0, -4); }     // two-way road
     }
     drawAisleArrows(park);
     ctx.restore();
@@ -959,15 +953,15 @@ function drawAisleArrows(sol) {
   if (!sol) return;
   if (!S.mapMode && S.view.scale * S.params.aisle < 16) return;
   const oneway = S.params.oneway;
-  ctx.strokeStyle = oneway ? 'rgba(250,204,21,.85)' : 'rgba(148,163,184,.7)';
-  ctx.lineWidth = oneway ? 2 : 1.5;
+  ctx.strokeStyle = oneway ? 'rgba(250,204,21,.55)' : 'rgba(148,163,184,.28)';   // quiet — direction is still readable but no longer clutters the lot
+  ctx.lineWidth = oneway ? 1.6 : 1.1;
   sol.aisles.forEach((a, ai) => {
     const p0 = a.poly[0], p1 = a.poly[1], p2 = a.poly[3];
     let mid0 = { x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2 };
     let mid1 = { x: (p1.x + a.poly[2].x) / 2, y: (p1.y + a.poly[2].y) / 2 };
     if (oneway && ai % 2 === 1) { const t = mid0; mid0 = mid1; mid1 = t; }   // alternate one-way flow
     const len = Math.hypot(mid1.x - mid0.x, mid1.y - mid0.y);
-    const n = Math.max(1, Math.floor(len / (oneway ? 50 : 60)));
+    const n = Math.max(1, Math.floor(len / (oneway ? 90 : 130)));   // sparser arrows = calmer lot
     const ang = Math.atan2(mid1.y - mid0.y, mid1.x - mid0.x);
     for (let i = 1; i <= n; i++) {
       const t = i / (n + 1);
