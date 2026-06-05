@@ -350,36 +350,28 @@ function draw() {
   if (park && S.layers.parking.vis) {
     ctx.save();
     if (S.boundary.length >= 3) { pathPoly(S.boundary, true); ctx.clip(); }
-    ctx.fillStyle = 'rgba(148,163,184,.24)';                        // 車道 aisle — the lane between two stall rows
-    for (const a of park.aisles) { pathPoly(a.poly, true); ctx.fill(); }
+    // DRIVE NETWORK — round-stroke every lane centre-line (aisles + connectors) so the connections are SMOOTH
+    // (rounded curb returns), NOT hard "two straight lines" corners. Same round join/cap trick as the user roads:
+    // the round caps where an aisle meets a cross-lane overlap into one continuous fillet.
+    ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    const _drvSc = (() => { const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }); return Math.hypot(b.x - a.x, b.y - a.y); })();
+    const _trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
+    if (park.spines && park.spines.length) {
+      for (const sp of park.spines) {
+        const ramp = sp.kind === 'conn' && park.connectors[sp.src] && park.connectors[sp.src].type;   // entrance ramp keeps a faint green hint
+        ctx.strokeStyle = ramp ? 'rgba(56,142,104,.36)' : 'rgba(116,130,150,.32)';
+        ctx.lineWidth = Math.max((sp.width || 18) * _drvSc, 2);
+        _trace(sp.line); ctx.stroke();
+      }
+    } else {                                                          // fallback (legacy save / before spines derived): flat fills
+      ctx.fillStyle = 'rgba(116,130,150,.30)';
+      for (const a of park.aisles) { pathPoly(a.poly, true); ctx.fill(); }
+      for (const lane of (park.connectors || [])) { const poly = lane.poly || lane; ctx.fillStyle = lane.type ? 'rgba(56,142,104,.34)' : 'rgba(116,130,150,.30)'; pathPoly(poly, true); ctx.fill(); }
+    }
+    ctx.restore();
     if (S.selAisle != null && park.aisles[S.selAisle] && S.tool === 'select') {     // highlight the selected drive aisle
       pathPoly(park.aisles[S.selAisle].poly, true);
       ctx.fillStyle = 'rgba(56,189,248,.32)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#38bdf8'; ctx.stroke();
-    }
-    // internal drive lanes — always TWO-WAY circulation (the 進/出 setting is only
-    // about the gate at the boundary, NOT the direction of the internal roads).
-    // Colour-code the road kinds so circulation is legible at a glance:
-    //   entrance drive 出入口引道 = green · cross-connector 橫向連接道 = orange · other asphalt = grey
-    if (park.connectors) for (const lane of park.connectors) {
-      const poly = lane.poly || lane;                 // back-compat
-      // ONE calm, unified asphalt drive network (quiet like TestFit — not 3 loud colours); the entrance ramp
-      // keeps only a faint green hint so you can still find the gate. No loud yellow centre-dash.
-      const road = lane.type ? { f: 'rgba(56,142,104,.34)', s: 'rgba(110,190,150,.5)' }
-                             : { f: 'rgba(116,130,150,.30)', s: 'rgba(148,163,184,.4)' };
-      pathPoly(poly, true); ctx.fillStyle = road.f; ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = road.s; ctx.stroke();
-      const a0 = toScreen({ x: (poly[0].x + poly[1].x) / 2, y: (poly[0].y + poly[1].y) / 2 });
-      const a1 = toScreen({ x: (poly[2].x + poly[3].x) / 2, y: (poly[2].y + poly[3].y) / 2 });
-      const ux = a1.x - a0.x, uy = a1.y - a0.y, len = Math.hypot(ux, uy) || 1;
-      const px = -uy / len, py = ux / len;
-      const flow = (from, to, off) => {                                     // sparse, low-key flow hint (full flow viz is the 🚦動線 layer)
-        const ang = Math.atan2(to.y - from.y, to.x - from.x), L = Math.hypot(to.x - from.x, to.y - from.y);
-        const n = Math.max(1, Math.floor(L / 150));
-        ctx.strokeStyle = 'rgba(203,213,225,.30)'; ctx.lineWidth = 1.3;
-        for (let k = 1; k <= n; k++) { const t = k / (n + 1); arrow({ x: from.x + (to.x - from.x) * t + px * off, y: from.y + (to.y - from.y) * t + py * off }, ang, 5); }
-      };
-      if (S.params.oneway) flow(a0, a1, 0);           // single direction = one-way drive
-      else { flow(a0, a1, 4); flow(a1, a0, -4); }     // two-way road
     }
     drawAisleArrows(park);
     ctx.restore();
