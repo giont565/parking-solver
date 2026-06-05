@@ -763,7 +763,7 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
 // intact (they span the rows); only the entrance ramp can lose the aisle it landed on. So rebuild circulation
 // on a THROWAWAY copy purely to get fresh entrance ramps, then graft ONLY those ramps onto the real layout —
 // every stall and every cross-aisle is kept (no aisle re-clip, no stall pruning). Lossless re-link.
-function reconnectNetwork() {
+function reconnectNetwork(full) {   // full=true → rebuild ALL connectors incl. cross-aisles (for ADDING a new aisle); default keeps the existing cross-aisles (lossless re-link for a MOVE)
   const park = activePark();
   if (!park || !park.aisles || !park.aisles.length || !window.PS.buildCirculation) return;
   // circulation inputs: parking mode re-links against the live globals; site mode replays the EXACT boundary /
@@ -776,7 +776,7 @@ function reconnectNetwork() {
   PS.buildCirculation(clone, boundary, ents, aisleW, open, builds, obs);
   const ramps = (clone.connectors || []).filter(c => c.ent != null || c.type);          // entrance ramps only
   const cross = (park.connectors || []).filter(c => c.ent == null && !c.type);           // keep the real cross-aisles
-  park.connectors = cross.concat(ramps);
+  park.connectors = full ? (clone.connectors || []).slice() : cross.concat(ramps);       // ADD → take the freshly-knit cross-aisles+ramps (connects the new aisle); MOVE → keep old cross-aisles + fresh ramps
   // drop only stalls physically sitting on a drive lane (a re-tiled lane runs its stalls across the fixed
   // cross-aisles) — can't park where cars drive. Area test (>8% under) so a stall merely grazed survives.
   const drives = park.connectors.map(c => c.poly || c);
@@ -801,6 +801,28 @@ function insertSpineNode(si, w) {   // add a bend node into aisle spine si at th
   if (Math.hypot(bestPt.x - ln[best].x, bestPt.y - ln[best].y) < 3 || Math.hypot(bestPt.x - ln[best + 1].x, bestPt.y - ln[best + 1].y) < 3) return false;   // too close to an existing node → don't make a zero-length segment
   ln.splice(best + 1, 0, bestPt);                                          // new node between the two it sits between
   retileSpine(si, true); reconnectNetwork(); return true;
+}
+// MANUAL ADD (TestFit-style): a user-drawn centre-line becomes a brand-new double-loaded drive aisle —
+// stalls tile along it, then the whole drive network re-links so it connects to the entrances (lossless).
+function addManualAisle(line) {
+  const park = activePark();
+  if (!park || !park.aisles) { toast('請先「自動排車位」，再加場內道路'); return; }
+  if (!line || line.length < 2) return;
+  const width = S.params.aisle || 24;
+  const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
+  const idx = park.aisles.length;                                          // new aisle index (spines preserve hand-drawn lines by this index)
+  park.aisles.push({ poly: spineToRect(line, width) });
+  park.spines = park.spines || [];
+  park.spines.push({ line: line.map(q => ({ x: q.x, y: q.y })), width, kind: 'aisle', src: idx });
+  let fresh = PS.tileStallsAlongSpine(line, p, S.boundary, spineBlockers(), 0);   // double-loaded along the drawn line
+  const shrink = poly => { const cx = (poly[0].x + poly[1].x + poly[2].x + poly[3].x) / 4, cy = (poly[0].y + poly[1].y + poly[2].y + poly[3].y) / 4; return poly.map(q => ({ x: cx + (q.x - cx) * 0.88, y: cy + (q.y - cy) * 0.88 })); };
+  fresh = fresh.filter(ns => !park.stalls.some(os => PS.polyOverlap(shrink(ns.poly), os.poly)));   // drop only stalls that really overlap an existing one (back-to-back touch survives)
+  fresh.forEach(s => s.spine = idx);
+  park.stalls.push(...fresh);
+  reconnectNetwork(true);                                                  // FULL rebuild → knit fresh cross-aisles so the new aisle connects to the gate network
+  (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
+  draw(); commit();
+  toast(`已新增場內道路（＋${fresh.length} 車位，已接入動線網）`);
 }
 function aisleAxis(poly) {        // {c, per} centroid + unit perpendicular of an aisle strip (per points across the lane)
   const c = PS.centroid(poly); let dir = { x: 1, y: 0 }, best = -1;
@@ -1021,13 +1043,15 @@ function drawDraft() {
   const pts = S.draft.slice();
   if (S.hoverWorld) pts.push(S.hoverWorld);
   ctx.save();
-  if (S.draftKind === 'road' && pts.length >= 2) {            // preview the road at its real width while drawing
+  if ((S.draftKind === 'road' || S.draftKind === 'aisle') && pts.length >= 2) {            // preview the road / aisle at its real width while drawing
     const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = (S.roadWidth || 24) * sc; ctx.strokeStyle = 'rgba(74,85,104,.55)';
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.lineWidth = (S.draftKind === 'aisle' ? (S.params.aisle || 24) : (S.roadWidth || 24)) * sc;
+    ctx.strokeStyle = S.draftKind === 'aisle' ? 'rgba(148,163,184,.40)' : 'rgba(74,85,104,.55)';
     ctx.beginPath(); pts.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke();
   }
   ctx.setLineDash([6, 4]); ctx.lineWidth = S.draftKind === 'road' ? 3 : 1.8;
-  ctx.strokeStyle = S.draftKind === 'obstacle' ? '#ef4444' : S.draftKind === 'building' ? '#94a3b8' : S.draftKind === 'road' ? '#facc15' : '#38bdf8';
+  ctx.strokeStyle = S.draftKind === 'obstacle' ? '#ef4444' : S.draftKind === 'building' ? '#94a3b8' : S.draftKind === 'road' ? '#facc15' : S.draftKind === 'aisle' ? '#cbd5e1' : '#38bdf8';
   pathPoly(pts, false); ctx.stroke();
   ctx.setLineDash([]);
   for (const v of S.draft) {
@@ -1633,10 +1657,10 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) return;  // right handled on contextmenu
 
-  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'parkzone') {
+  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'aisle' || S.tool === 'parkzone') {
     if (!S.draft) { S.draft = []; S.draftKind = S.tool; }
-    // closed shapes snap to the first point to close; a road is an open polyline (double-click / Enter to finish)
-    if (S.tool !== 'road' && S.draft.length >= 3) {
+    // closed shapes snap to the first point to close; a road / aisle is an open polyline (double-click / Enter to finish)
+    if (S.tool !== 'road' && S.tool !== 'aisle' && S.draft.length >= 3) {
       const f = toScreen(S.draft[0]), sp = toScreen(w);
       if (Math.hypot(f.x - sp.x, f.y - sp.y) < 12) { finishDraft(); return; }
     }
@@ -1901,7 +1925,7 @@ cv.addEventListener('contextmenu', e => {
 
 // click selected stall again cycles type (handled via dblclick for clarity)
 cv.addEventListener('dblclick', e => {
-  if (S.draftKind === 'road' && S.draft && S.draft.length >= 2) { finishDraft(); return; }   // double-click ends an open road
+  if ((S.draftKind === 'road' || S.draftKind === 'aisle') && S.draft && S.draft.length >= 2) { finishDraft(); return; }   // double-click ends an open road / aisle
   if (S.tool !== 'select') return;
   const w = evtWorld(e);
   const eh = pickable('entrance') ? entranceAt(w) : null;
@@ -1961,10 +1985,11 @@ function snap(w) {                   // 1-ft snap when zoomed in
 }
 
 function finishDraft() {
-  const minPts = S.draftKind === 'road' ? 2 : 3;
+  const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle') ? 2 : 3;
   if (!S.draft || S.draft.length < minPts) { S.draft = null; S.draftKind = null; draw(); return; }
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
+  if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null; msg = '基地完成，按「自動排車位」'; }
   else if (S.draftKind === 'building') {
     // a smaller shape drawn INSIDE an existing building becomes its void (courtyard)
@@ -2023,7 +2048,7 @@ window.addEventListener('keydown', e => {
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -2032,10 +2057,10 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', aisle:'畫場內道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
-  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
+  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
   if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; }
