@@ -786,6 +786,17 @@ function insertSpineNode(si, w) {   // add a bend node into aisle spine si at th
   ln.splice(best + 1, 0, bestPt);                                          // new node between the two it sits between
   retileSpine(si, true); reconnectNetwork(); return true;
 }
+// ADAPTIVE RE-FLOW after a manual lane move/reshape (TestFit-style "move a road and the lot adapts"):
+// re-tile EVERY drive aisle so the moved lane AND its neighbours refill the freed space, then FULL-rebuild
+// the road network so the OTHER roads come and connect to the moved lane (instead of a lossless move that
+// left gaps + stale cross-aisles). Manual single-load / bend state is preserved (retileSpine honours sp.sides
+// and the hand-drawn line).
+function reflowAfterEdit() {
+  const park = activePark();
+  if (!park || !park.spines) { reconnectNetwork(true); return; }
+  for (let i = 0; i < park.spines.length; i++) if (park.spines[i].kind === 'aisle') retileSpine(i, true);
+  reconnectNetwork(true);
+}
 // MANUAL ADD (TestFit-style): a user-drawn centre-line becomes a brand-new double-loaded drive aisle —
 // stalls tile along it, then the whole drive network re-links so it connects to the entrances (lossless).
 function addManualAisle(line) {
@@ -1842,14 +1853,14 @@ window.addEventListener('pointerup', () => {
   }
   if (S.dragSpine) {                                 // spine node released → re-tile cleanly, then re-link the drive network
     const si = S.dragSpine.si; S.dragSpine = null;
-    retileSpine(si, true); reconnectNetwork();
+    reflowAfterEdit();   // re-tile every lane (the moved one + neighbours refill) + FULL re-knit so other roads come connect — adaptive move
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (S.mode === 'site' && park && park.spines && park.spines[si]) showAislePopup(si); else { S.selAisle = null; hideAislePopup(); }
     draw(); commit();
     return;
   }
   if (S.dragSpineBody) {                              // whole-aisle move done → re-tile cleanly, then re-link the drive network
-    const si = S.dragSpineBody.si; S.dragSpineBody = null; retileSpine(si, true); reconnectNetwork();
+    const si = S.dragSpineBody.si; S.dragSpineBody = null; reflowAfterEdit();   // re-tile every lane (refill) + FULL re-knit (other roads come connect)
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (S.mode === 'site' && park && park.spines && park.spines[si]) showAislePopup(si); else { S.selAisle = null; hideAislePopup(); }
     draw(); commit();
