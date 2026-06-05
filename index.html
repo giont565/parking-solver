@@ -338,8 +338,8 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築</button>
     <button class="tool" data-tool="obstacle" title="畫障礙 / 排除區 (O)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>障礙</button>
-    <button class="tool" data-tool="road" title="畫社區道路（建築/車位自動繞開）(R)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21l4-18M20 21l-4-18M12 7v2M12 13v2M12 19v1"/></svg>道路</button>
+    <button class="tool" data-tool="road" title="畫場外道路（區劃外的路：切開區劃＋對外動線分析；建築/車位自動繞開）(R)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21l4-18M20 21l-4-18M12 7v2M12 13v2M12 19v1"/></svg>場外道路</button>
     <button class="tool" data-tool="parkzone" title="畫停車區（只在框內排車位）(Z)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><path d="M9 16V8h3a2 2 0 010 4H9"/></svg>停車區</button>
     <button class="tool" data-tool="stall" title="手動加車位（點一下放一格；選車位按 Delete 刪）(K)">
@@ -482,7 +482,7 @@
 
     <!-- road editor (select mode — click or drag a road to set width / delete) -->
     <div id="roadPopup">
-      <div class="cap">道路寬度</div>
+      <div class="cap">場外道路寬度</div>
       <div class="row">
         <button data-rw="narrow" title="窄路 ≈5.5m">窄</button>
         <button data-rw="std" title="標準雙向 ≈7.3m">標準</button>
@@ -493,13 +493,13 @@
 
     <!-- drive-aisle editor (select mode — click an auto drive aisle; drag it to slide the parking grid) -->
     <div id="aislePopup">
-      <div class="cap">這排車道</div>
+      <div class="cap">這條場內道路</div>
       <div class="row">
         <button id="aisleSingle" title="只停單邊（移除一側的車位）">單邊停</button>
         <button id="aisleDouble" title="還原成雙邊停車">雙邊停</button>
-        <button id="aisleRemove" class="del" title="移除這排車道與車位">移除</button>
+        <button id="aisleRemove" class="del" title="移除這條場內道路與車位">移除</button>
       </div>
-      <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖兩端藍點可改這排車道的方向／長短，車位跟著重貼</div>
+      <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖兩端可改這條場內道路的方向／長短、雙擊車身加彎折點，車位跟著重貼</div>
     </div>
   </div>
 

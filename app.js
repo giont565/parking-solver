@@ -835,7 +835,7 @@ function setAisleEdit(i, op) {     // record (or clear, op=null) an override for
     toast('已改為單邊停車（再按「雙邊停」可還原）');
   } else {                        // remove, or restore-to-double → re-pack so removed stalls come back / drop cleanly
     S.selAisle = null; hideAislePopup(); resolveActive();
-    toast(op === 'remove' ? '已移除這排車道與車位' : '已還原雙邊停車');
+    toast(op === 'remove' ? '已移除這條場內道路與車位' : '已還原雙邊停車');
   }
 }
 function removeAisle(i) { setAisleEdit(i, 'remove'); }
@@ -1738,7 +1738,7 @@ cv.addEventListener('pointerdown', e => {
     // click a GREY drive aisle body to select it (remove / single-load via the popup)
     { const ai = aisleAt(w); if (ai >= 0) { S.selAisle = ai; S.selStall = null; S.selRoad = null; showAislePopup(ai); draw(); return; } }
     // clicking an ORANGE/GREEN connector (auto "glue" lanes, regenerated each solve) → explain why it's not directly editable
-    { if (connectorAt(w) >= 0) { S.selAisle = null; hideAislePopup(); toast('連接道：拖它兩端的橘色點可調整這條線（灰色車道拖藍色點、車位會跟著重貼）'); draw(); return; } }
+    { if (connectorAt(w) >= 0) { S.selAisle = null; hideAislePopup(); toast('場內道路：拖兩端的點可調整這條線，車位會跟著重貼'); draw(); return; } }
     S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; S.selObstacle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
   }
 });
@@ -2032,7 +2032,7 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
   if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'parkzone') { S.draft = null; }
@@ -2181,7 +2181,7 @@ function buildLegend() {
     L.appendChild(it);
   }
   const extra = document.createElement('span'); extra.className = 'it';
-  extra.innerHTML = `<span class="sw" style="background:rgba(203,213,225,.4)"></span>車道`;
+  extra.innerHTML = `<span class="sw" style="background:rgba(203,213,225,.4)"></span>場內道路`;
   L.appendChild(extra);
   // residential unit-fit swatches (only when a unit plan is on screen)
   if (S.mode === 'site' && S.site && S.site.unitPlan && S.layers.unitfit && S.layers.unitfit.vis) {
