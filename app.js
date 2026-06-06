@@ -350,22 +350,13 @@ function draw() {
   if (park && S.layers.parking.vis) {
     ctx.save();
     if (S.boundary.length >= 3) { pathPoly(S.boundary, true); ctx.clip(); }
-    // DRIVE NETWORK — a CONTINUOUS, unbroken road surface with smooth rounded junctions:
-    // (1) FILL every lane rect — overlapping aisle/connector rects tile into ONE solid asphalt sheet, so the
-    //     roads never break where segments meet (fixes "用線段聯繫會斷開道路"). (2) round-cap STROKE each
-    //     centre-line on top — the round caps fillet the junction corners into smooth curb-returns. Opaque
-    //     colours → the fill and the rounding stroke never compound into uneven patches.
-    ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    const _drvSc = (() => { const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }); return Math.hypot(b.x - a.x, b.y - a.y); })();
-    const _trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
-    const ASPH = '#566178', RAMP = '#4a7058';                         // entrance ramp keeps a faint green tint
+    // DRIVE NETWORK — fill every lane rect into ONE continuous solid asphalt surface. Overlapping aisle /
+    // connector rects union into an unbroken sheet: no gaps, no dangling round-cap nubs at dead-end stubs
+    // (a lane that ends above a building just ends square). Entrance ramp keeps a faint green tint.
+    ctx.save();
+    const ASPH = '#566178', RAMP = '#4a7058';
     for (const a of park.aisles) { ctx.fillStyle = ASPH; pathPoly(a.poly, true); ctx.fill(); }
     for (const lane of (park.connectors || [])) { const poly = lane.poly || lane; ctx.fillStyle = lane.type ? RAMP : ASPH; pathPoly(poly, true); ctx.fill(); }
-    if (park.spines) for (const sp of park.spines) {
-      const ramp = sp.kind === 'conn' && park.connectors[sp.src] && park.connectors[sp.src].type;
-      ctx.strokeStyle = ramp ? RAMP : ASPH; ctx.lineWidth = Math.max((sp.width || 18) * _drvSc, 2);
-      _trace(sp.line); ctx.stroke();
-    }
     ctx.restore();
     if (S.selAisle != null && park.aisles[S.selAisle] && S.tool === 'select') {     // highlight the selected drive aisle
       pathPoly(park.aisles[S.selAisle].poly, true);
