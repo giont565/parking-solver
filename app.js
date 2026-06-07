@@ -2410,7 +2410,7 @@ function exportDXF() {
   if (S.boundary.length >= 3) {
     const bb = PS.bbox(S.boundary);
     const stalls = park ? park.stalls.length : 0;
-    text({ x: bb.minX, y: bb.maxY + 24 }, 12, `TestFit Clone — ${stalls} stalls @ ${new Date().toISOString().slice(0, 10)}`, 'ANNOTATION');
+    text({ x: bb.minX, y: bb.maxY + 24 }, 12, `Urbanweave 城織 — ${stalls} stalls @ ${new Date().toISOString().slice(0, 10)}`, 'ANNOTATION');
     if (S.mode === 'site' && S.site) text({ x: bb.minX, y: bb.maxY + 8 }, 9, `GFA ${Math.round(S.site.gfa)} sf · FAR ${S.site.far.toFixed(2)} · ${S.site.floors}F`, 'ANNOTATION');
   }
   s += '0\nENDSEC\n0\nEOF\n';
@@ -2444,7 +2444,7 @@ function exportOBJ() {
   if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) box(S.site.footprint, S.site.height, 'massing');
   const park = activePark();
   if (park) park.stalls.forEach((s, i) => flat(s.poly, 0.1, 'stall_' + (i + 1) + '_' + s.type));
-  const obj = '# TestFit Clone — 3D massing (Wavefront OBJ); units: feet; Y = up\n' + V.join('\n') + '\n' + F.join('\n') + '\n';
+  const obj = '# Urbanweave 城織 — 3D massing (Wavefront OBJ); units: feet; Y = up\n' + V.join('\n') + '\n' + F.join('\n') + '\n';
   dl((S.mode === 'site' ? 'site' : 'parking') + '-massing.obj', new Blob([obj], { type: 'text/plain' }));
   toast('已匯出 3D 模型 .obj（可匯入 SketchUp / Blender / Rhino）');
 }
@@ -2508,7 +2508,7 @@ function exportGLTF() {
     materials.push({ name: g.key, pbrMetallicRoughness: { baseColorFactor: g.color, metallicFactor: 0, roughnessFactor: 0.85 }, doubleSided: true });
     primitives.push({ attributes: { POSITION: 0 }, indices: i + 1, material: i });
   });
-  const gltf = { asset: { version: '2.0', generator: 'TestFit Clone' }, scene: 0, scenes: [{ nodes: [0] }],
+  const gltf = { asset: { version: '2.0', generator: 'Urbanweave 城織' }, scene: 0, scenes: [{ nodes: [0] }],
     nodes: [{ mesh: 0, name: (S.mode === 'site' ? 'site' : 'parking') + '_model' }], meshes: [{ primitives }],
     materials, accessors, bufferViews, buffers: [{ byteLength: binLen }] };
   const enc = new TextEncoder();
@@ -3376,7 +3376,7 @@ h3{font-size:14px;margin:14px 0 6px;}.foot{color:#94a3b8;font-size:11px;margin-t
 <h1>${esc(title)}</h1>
 <div class="meta">地點：${esc($('#addrInput') ? $('#addrInput').value : '')} ｜ 日期：${date} ｜ 面積：${fmtA(area)} (${U.big(area).toFixed(2)} ${U.bu()})</div>
 <img src="${img}"><table>${rowsHtml}</table>${comp}
-<div class="foot">由 TestFit Clone 產生 · 概念性可行性估算，非正式工程／法律文件</div>
+<div class="foot">由 Urbanweave 城織 產生 · 概念性可行性估算，非正式工程／法律文件</div>
 <button class="noprint" onclick="window.print()" style="margin-top:8px;padding:9px 18px;font-size:13px;cursor:pointer;">🖨️ 列印 / 存成 PDF</button>
 </body></html>`;
   const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));   // no document.write
