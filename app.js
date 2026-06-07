@@ -31,7 +31,7 @@ const S = {
   mode: 'parking', site: null,               // parking | site (building massing)
   siteParkAngle: 90,                         // parking angle used inside site solver
   showTrees: true, _trees: null,             // landscape trees (cached positions)
-  parcels: null, activeParcel: 0, splitPt: null,  // subdivision: sub-parcels
+  parcels: null, activeParcel: 0, parcelDev: null, splitPt: null,  // subdivision: sub-parcels (parcelDev[i] = each parcel's saved development → master plan keeps them all)
   draft: null,             // in-progress polygon points
   draftKind: null,         // 'boundary'|'building'|'obstacle'
   hoverWorld: null,
@@ -320,6 +320,7 @@ function draw() {
       pathPoly(pc, true);
       ctx.fillStyle = 'rgba(100,116,139,.10)'; ctx.fill();
       ctx.save(); ctx.setLineDash([6, 5]); ctx.lineWidth = 1.3; ctx.strokeStyle = 'rgba(148,163,184,.6)'; ctx.stroke(); ctx.restore();
+      if (!S.is3d && S.parcelDev && S.parcelDev[i]) drawParcelOverlay(S.parcelDev[i]);   // master plan: show this parcel's development in the overview
       labelPoly(pc, '子地 ' + String.fromCharCode(65 + i), 'rgba(148,163,184,.8)');
     });
   }
@@ -2102,7 +2103,7 @@ function doSolve() {
     applyAisleEdits(S.solution);                  // re-apply manual aisle overrides (single-load / remove) to the fresh pack
     deriveSpines(S.solution);                     // every drive aisle becomes an editable spine (centre-line + nodes)
     $('#busy').classList.remove('show');
-    updateMetrics(); draw(); commit();
+    updateMetrics(); draw(); commit(); saveParcelDev();
     const ms = Math.round(performance.now() - t0);
     if (res) toast(`完成：${res.stalls.length} 車位　(角度 ${res.metrics.bestAngleDeg}°, ${ms}ms)`);
     $('#stMsg').textContent = res ? `已排 ${res.stalls.length} 車位` : '無法排版';
@@ -2283,7 +2284,7 @@ function serialize() {
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
   S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.roadLines = d.roadLines || []; S.parkZones = d.parkZones || []; S.manualCores = d.manualCores || []; S.entrances = d.entrances || [];
-  S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0;
+  S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0; S.parcelDev = null;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
   Object.assign(S.params, d.params || {}); Object.assign(S.opts, d.opts || {});
@@ -2560,7 +2561,7 @@ $('#btnSample').onclick = () => {
 $('#btnClear').onclick = () => {
   S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
-  S.parcels = null; S.activeParcel = 0; S.splitPt = null;
+  S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
   S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
   if (S.mapMode) draw(); else fitView();
@@ -2792,7 +2793,7 @@ function doSolveSite() {
     S.site = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
     if (S.site && S.site.parkSol) { applyAisleEdits(S.site.parkSol); deriveSpines(S.site.parkSol); }   // overrides + editable spines
     $('#busy').classList.remove('show');
-    updateSiteMetrics(); draw(); commit();
+    updateSiteMetrics(); draw(); commit(); saveParcelDev();
     const ms = Math.round(performance.now() - t0);
     if (S.site) toast(`建案：${S.site.residential ? S.site.units + ' 戶' : Math.round(S.site.gfa).toLocaleString() + ' SF'} · ${S.site.floors}F · ${ms}ms`);
     $('#stMsg').textContent = S.site ? `建案 ${S.site.floors}F · FAR ${S.site.far.toFixed(2)}` : '無法配置';
@@ -3746,9 +3747,13 @@ function buildObjTree() {
   const rows = [];
   const row = (lv, icon, label, count, action, layer) => rows.push({ lv, icon, label, count, action, layer });
   row(1, '🗺️', '基地 Site', S.boundary.length >= 3 ? '✓' : '—', () => gotoGroup('即時數據'), 'site');
-  if (S.parcels && S.parcels.length > 1) S.parcels.forEach((pc, i) =>
-    row(2, i === S.activeParcel ? '📍' : '▫️', '子地 ' + String.fromCharCode(65 + i),
-      U.big(PS.polyArea(pc)).toFixed(2) + U.bu(), () => setActiveParcel(i)));
+  if (S.parcels && S.parcels.length > 1) {
+    S.parcels.forEach((pc, i) =>
+      row(2, i === S.activeParcel ? '📍' : '▫️', '子地 ' + String.fromCharCode(65 + i),
+        U.big(PS.polyArea(pc)).toFixed(2) + U.bu(), () => setActiveParcel(i)));
+    const mp = masterPlanTotals();
+    if (mp) row(1, '🗺️', '總圖 Master Plan', `${mp.developed}/${mp.parcels} 開發 · ${mp.units ? mp.units + ' 戶 · ' : ''}${mp.stalls.toLocaleString()} 車位`, () => {});
+  }
   if (S.mode === 'site') {
     row(2, '🏢', '建築 Building', S.site ? (S.site.residential ? S.site.units + ' 戶' : S.site.floors + 'F') : '—', () => { setMode('site'); gotoGroup('開發類型'); }, 'building');
     if (S.site && S.site.unitPlan) row(3, '🏠', '戶型平面 Units', `${S.site.unitPlan.perFloor}/層 · ${S.layers.unitfit.vis ? '顯示' : '隱藏'}`, () => toggleLayer('unitfit', 'vis'), 'unitfit');
@@ -3793,12 +3798,52 @@ function splitParcel(p, q) {
   if ($('#objTree') && $('#objTree').classList.contains('show')) buildObjTree();
   toast(`已切割成 ${S.parcels.length} 塊子地（在物件樹點選切換）`);
 }
+// MASTER PLAN: each sub-parcel keeps its own development so the whole plan builds up parcel by parcel.
+function saveParcelDev() {
+  if (!S.parcels || S.parcels.length < 2) return;
+  S.parcelDev = S.parcelDev || [];
+  S.parcelDev[S.activeParcel] = { mode: S.mode, site: S.site, solution: S.solution, buildings: S.buildings };
+}
+function drawParcelOverlay(dev) {   // render ONE non-active parcel's saved development (parking + massing) for the master-plan overview
+  if (!dev) return;
+  const park = dev.mode === 'site' ? (dev.site && dev.site.parkSol) : dev.solution;
+  ctx.save();
+  if (park && park.aisles) {
+    for (const a of park.aisles) { ctx.fillStyle = '#566178'; pathPoly(a.poly, true); ctx.fill(); }
+    for (const lane of (park.connectors || [])) { const poly = lane.poly || lane; ctx.fillStyle = lane.type ? '#4a7058' : '#566178'; pathPoly(poly, true); ctx.fill(); }
+    for (const s of park.stalls) drawStall(s);
+  }
+  const site = dev.site;
+  if (site && site.garden && site.garden.bars) site.garden.bars.forEach(b => { pathPoly(b, true); ctx.fillStyle = 'rgba(56,189,248,.42)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#38bdf8'; ctx.stroke(); });
+  else if (site && site.footprint && site.footprint.length >= 3) fillVoids(site.footprint, site.footVoids, 'rgba(56,189,248,.42)', '#38bdf8', 1.5);
+  (dev.buildings || []).forEach(b => { fillVoids(b.poly, b.voids, 'rgba(148,163,184,.5)', '#94a3b8', 1.5); });
+  ctx.restore();
+}
+function masterPlanTotals() {   // aggregate every developed parcel → the master-plan totals
+  if (!S.parcels || S.parcels.length < 2 || !S.parcelDev) return null;
+  saveParcelDev();              // make sure the active parcel is counted
+  let units = 0, gfa = 0, stalls = 0, developed = 0;
+  for (const d of S.parcelDev) {
+    if (!d) continue; developed++;
+    if (d.mode === 'site' && d.site) { units += d.site.units || 0; gfa += d.site.gfa || 0; stalls += d.site.parkingProvided || (d.site.parkSol ? d.site.parkSol.stalls.length : 0); }
+    else if (d.solution) stalls += d.solution.stalls.length;
+  }
+  return { parcels: S.parcels.length, developed, units, gfa: Math.round(gfa), stalls };
+}
 function setActiveParcel(i) {
   if (!S.parcels || !S.parcels[i]) return;
+  saveParcelDev();                                  // keep the parcel we're leaving
   S.activeParcel = i; S.boundary = S.parcels[i];
-  S.solution = null; S.site = null; S._trees = null; S.selStall = null; S.edgeSetback = {}; S.selEdge = null;
-  S.mode === 'site' ? doSolveSite() : doSolve();
-  fitView();
+  S._trees = null; S.selStall = null; S.edgeSetback = {}; S.selEdge = null;
+  const dev = S.parcelDev && S.parcelDev[i];
+  if (dev && (dev.site || dev.solution)) {          // restore this parcel's saved development (no re-solve)
+    S.site = dev.site; S.solution = dev.solution; S.buildings = dev.buildings || [];
+    setMode(dev.mode); draw(); fitView();
+  } else {
+    S.solution = null; S.site = null;
+    S.mode === 'site' ? doSolveSite() : doSolve();
+    fitView();
+  }
 }
 
 /* ============================ CLOUD (Firebase Auth + Firestore) ============================ */
