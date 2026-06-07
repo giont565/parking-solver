@@ -981,12 +981,55 @@ function drawRoadProfile(rd, sc) {
   }
   return true;
 }
+// ---- INTERSECTION GEOMETRY: where two streets cross, lay a clean paved junction (covers the overlapping
+// striped bands) + zebra crosswalks on each approach, so crossings read as real intersections ----
+function pavedW(rd) { return (rd.profile || []).reduce((s, f) => s + ((f.type === 'sidewalk' || f.type === 'buffer') ? 0 : (+f.width || 0)), 0) || profileWidth(rd); }
+function segX(p1, p2, p3, p4) {   // intersection of segments p1p2 × p3p4 (with unit dirs), or null
+  const ax = p2.x - p1.x, ay = p2.y - p1.y, bx = p4.x - p3.x, by = p4.y - p3.y, den = ax * by - ay * bx;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((p3.x - p1.x) * by - (p3.y - p1.y) * bx) / den, u = ((p3.x - p1.x) * ay - (p3.y - p1.y) * ax) / den;
+  if (t < -0.02 || t > 1.02 || u < -0.02 || u > 1.02) return null;
+  const L1 = Math.hypot(ax, ay) || 1, L2 = Math.hypot(bx, by) || 1;
+  return { x: p1.x + ax * t, y: p1.y + ay * t, dA: { x: ax / L1, y: ay / L1 }, dB: { x: bx / L2, y: by / L2 } };
+}
+function lineX(p, d, q, e) {   // intersection of line(p, dir d) × line(q, dir e)
+  const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-9) return { x: p.x, y: p.y };
+  const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return { x: p.x + d.x * t, y: p.y + d.y * t };
+}
+function drawCrosswalk(X, dir, perp, span, dist) {   // zebra bands at ±dist along `dir`, each spanning `span` across `perp`
+  ctx.fillStyle = 'rgba(232,236,243,.7)';
+  for (const side of [1, -1]) {
+    const c = { x: X.x + dir.x * side * dist, y: X.y + dir.y * side * dist }, depth = 6, n = Math.max(3, Math.round(span / 4));
+    for (let k = 0; k < n; k++) {
+      const o = -span / 2 + (k + 0.25) * (span / n), sw = (span / n) * 0.55;
+      const b0 = { x: c.x + perp.x * o, y: c.y + perp.y * o }, b1 = { x: c.x + perp.x * (o + sw), y: c.y + perp.y * (o + sw) };
+      pathPoly([{ x: b0.x - dir.x * depth / 2, y: b0.y - dir.y * depth / 2 }, { x: b1.x - dir.x * depth / 2, y: b1.y - dir.y * depth / 2 }, { x: b1.x + dir.x * depth / 2, y: b1.y + dir.y * depth / 2 }, { x: b0.x + dir.x * depth / 2, y: b0.y + dir.y * depth / 2 }], true); ctx.fill();
+    }
+  }
+}
+function drawIntersections() {
+  const roads = (S.roadLines || []).filter(r => r.profile && r.profile.length);
+  for (let i = 0; i < roads.length; i++) for (let j = i + 1; j < roads.length; j++) {
+    const A = roads[i], B = roads[j], Wa = profileWidth(A), Wb = profileWidth(B), pWa = pavedW(A), pWb = pavedW(B);
+    for (let a = 0; a + 1 < A.line.length; a++) for (let b = 0; b + 1 < B.line.length; b++) {
+      const X = segX(A.line[a], A.line[a + 1], B.line[b], B.line[b + 1]); if (!X) continue;
+      const pa = { x: -X.dA.y, y: X.dA.x }, pb = { x: -X.dB.y, y: X.dB.x };
+      const corner = (sa, sb) => lineX({ x: X.x + pa.x * sa * Wa / 2, y: X.y + pa.y * sa * Wa / 2 }, X.dA, { x: X.x + pb.x * sb * Wb / 2, y: X.y + pb.y * sb * Wb / 2 }, X.dB);
+      const quad = [corner(1, 1), corner(1, -1), corner(-1, -1), corner(-1, 1)];
+      pathPoly(quad, true); ctx.fillStyle = '#3a4150'; ctx.fill();                 // clean paved junction (hides the overlapping bands)
+      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(34,42,56,.9)'; ctx.stroke();    // curb outline
+      drawCrosswalk(X, X.dA, pa, pWa, Wb / 2 - 3);                                 // crossing street A (on B's two approaches)
+      drawCrosswalk(X, X.dB, pb, pWb, Wa / 2 - 3);                                 // crossing street B
+    }
+  }
+}
 function drawRoads() {
   const lines = S.roadLines || [];
   const trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
   if (!lines.length) { for (const r of (S.roads || [])) { pathPoly(r, true); ctx.fillStyle = 'rgba(71,85,105,.9)'; ctx.fill(); } return; }  // legacy saves: flat strips
   const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);   // px per foot (map-safe)
   for (const rd of lines) if (rd.profile && rd.profile.length) drawRoadProfile(rd, sc);   // composable street sections
+  drawIntersections();                                                                    // clean paved junctions + crosswalks where streets cross
   const flat = lines.filter(rd => !rd.profile || !rd.profile.length);                     // legacy / no-profile roads → smooth flat asphalt
   if (flat.length) {
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
