@@ -20,7 +20,8 @@
   }
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
-    background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;}
+    background:var(--bg);color:var(--text);overflow:hidden;font-size:13px;
+    overscroll-behavior:none;-webkit-overflow-scrolling:auto;}
   button{font-family:inherit;}
   /* ---- layout ---- */
   #app{display:grid;grid-template-rows:auto 1fr 26px;grid-template-columns:1fr 340px;

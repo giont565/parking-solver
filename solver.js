@@ -917,7 +917,7 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
   // the road. Measure the true overlap fraction on a fine grid over the stall (catches a thin
   // edge strip the centre/coarse test misses) and drop the stall if >8% sits under any drive.
   const drive = connectors.concat(spines);
-  sol.stalls = sol.stalls.filter(s => {
+  const clearedStalls = sol.stalls.filter(s => {
     const candidates = drive.filter(d => polyOverlap(s.poly, d.poly));
     if (!candidates.length) return true;
     const b = bbox(s.poly); let inside = 0, under = 0;
@@ -928,6 +928,11 @@ function buildCirculation(sol, boundary, entrances, aisleW, ignoreRoads, buildin
     }
     return under / Math.max(inside, 1) <= 0.08;           // >8% of the stall under a drive → can't park there, drop it
   });
+  // Safety net: a degenerate gate (e.g. an entrance dropped on a shared sub-parcel cut line)
+  // can produce a spine band that smothers the whole lot, which would clear every stall.
+  // If clearing would wipe >60% of stalls, the drive geometry is pathological — keep the
+  // packed stalls rather than zeroing the lot. Mirrors the reachability net below.
+  if (clearedStalls.length >= sol.stalls.length * 0.4) sol.stalls = clearedStalls;
 
   // reachability BFS over {aisles, perimeter connectors}, seeded by the entrance stubs
   const nodes = sol.aisles.map(a => a.poly).concat(connectors.map(cn => cn.poly));
@@ -1060,15 +1065,21 @@ function clipHP(poly, nx, ny, cx, cy) {
 }
 
 // Buildable envelope = parcel inset by a (possibly per-edge) setback.
+// The inward normal is derived ONCE from the polygon winding (signed area), not per-edge
+// from the centroid. The old centroid test pointed the wrong way on the reflex edge of a
+// concave parcel (an L-shaped lot, or a piece left after subdividing), which let the
+// envelope — and the massing/parking built on it — bleed across that edge into the neighbour.
 function buildableEnvelope(parcel, setbackOf) {
-  const c = centroid(parcel);
+  let area2 = 0;
+  for (let i = 0; i < parcel.length; i++) { const a = parcel[i], b = parcel[(i + 1) % parcel.length]; area2 += a.x * b.y - b.x * a.y; }
+  const ccw = area2 > 0;            // inward normal = left normal for CCW winding, else right normal
   let poly = parcel.slice();
   for (let i = 0; i < parcel.length; i++) {
     const a = parcel[i], b = parcel[(i + 1) % parcel.length];
     const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
     let nx = -dy / L, ny = dx / L;
+    if (!ccw) { nx = -nx; ny = -ny; }
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    if (nx * (c.x - mx) + ny * (c.y - my) < 0) { nx = -nx; ny = -ny; }   // point inward
     const d = setbackOf(i, a, b);
     poly = clipHP(poly, nx, ny, mx + nx * d, my + ny * d);
     if (poly.length < 3) return [];
@@ -1535,6 +1546,11 @@ function solveSite(input) {
   const retailGLA = groundRetail ? footArea * 0.95 : 0;                       // ground-floor leasable area
   const nrsf = (isWrap ? resiFootArea : footArea) * resiFloors * p.efficiency;   // wrap: only the ring is rentable; mixed-use: resi floors only
   const keys = hotel ? Math.floor(nrsf / 450) : 0;   // hotel room count (~450 sqft/key incl. corridor + lobby + back-of-house)
+  // Service core (egress stairs + lifts) for mid/high-rise — computed UP-FRONT so the residential
+  // unit-fit can keep it clear; units must not tile over the stair/lift core (that was inflating the
+  // count). ~5% of the plate, clamped 380–2600 sf. Reused below for rendering + compliance.
+  const corePoly = (floors >= 3 && p.useType !== 'singlefamily' && !garden && !industrial && !retail && !datacenter && footprint && footprint.length >= 3)
+    ? polyScaleAbout(footprint, Math.sqrt(Math.min(Math.max(footArea * 0.05, 380), 2600) / footArea), centroid(footprint)) : null;
 
   // 4. units (residential) or none (commercial/industrial)
   let units = 0, unitsByType = [], densityCapped = false, subdivision = null, unitPlan = null;
@@ -1551,7 +1567,7 @@ function solveSite(input) {
     // A wrap's parking core + footprint courtyards are kept clear; fall back to a GFA estimate when
     // the plate is too small/thin to tile a real layout.
     if (!garden) {
-      const fitVoids = (footVoids || []).concat(isWrap && wrapCore ? [wrapCore] : []);
+      const fitVoids = (footVoids || []).concat(isWrap && wrapCore ? [wrapCore] : []).concat(corePoly ? [corePoly] : []);
       const uf = unitFitLayout(footprint, p, fitVoids);
       if (uf.perFloor >= 2) { unitPlan = uf; units = uf.perFloor * resiFloors; }
     }
@@ -1645,11 +1661,11 @@ function solveSite(input) {
   // 6. financials
   const fin = computeFinancials(p.fin, { gfa, nrsf, units, residential });
 
-  // 6b. AUTO CORE: a service core (egress stairs + elevators) for footprint mid/high-rise buildings
+  // 6b. AUTO CORE: a service core (egress stairs + elevators) for footprint mid/high-rise buildings.
+  // The polygon was computed up-front (corePoly) so the unit-fit could reserve it; reuse it here.
   let cores = [], coreInfo = null;
-  if (floors >= 3 && !subdivision && !garden && !industrial && !retail && !datacenter && footprint && footprint.length >= 3) {
-    const ca = Math.min(Math.max(footArea * 0.05, 380), 2600);
-    cores = [polyScaleAbout(footprint, Math.sqrt(ca / footArea), centroid(footprint))];
+  if (corePoly) {
+    cores = [corePoly];
     coreInfo = {
       stairs: footArea > 12000 ? 3 : 2,                                    // ≥2 egress stairs; +1 for big floorplates
       elevators: Math.min(residential ? Math.max(1, Math.ceil(units / 90)) : Math.max(1, Math.ceil(floors / 6)), 10),

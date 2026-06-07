@@ -1755,7 +1755,10 @@ function drawFace3D(f) {
 /* --------------------------- interaction --------------------------------- */
 function evtWorld(e) {
   const r = cv.getBoundingClientRect();
-  return toWorld({ x: e.clientX - r.left, y: e.clientY - r.top });
+  // Touch offset-cursor: lift the effective point ~22px above the fingertip so the target
+  // isn't hidden under the finger; the snap/hover indicator then shows exactly where it lands.
+  const lift = e.pointerType === 'touch' ? 22 : 0;
+  return toWorld({ x: e.clientX - r.left, y: e.clientY - r.top - lift });
 }
 function entranceAt(w) {                    // pick an entrance near world point w
   const m = toScreen(w);
@@ -1809,10 +1812,20 @@ cv.addEventListener('pointerdown', e => {
   }
 
   if (S.tool === 'entrance') {
+    // a cut line is an edge shared by the active sub-parcel AND a sibling — a gate dropped there
+    // confuses the drive-lane carving (which lane belongs to which lot), so flag it.
+    const onCutLine = pt => {
+      if (!S.parcels || S.parcels.length < 2) return false;
+      const dSeg = (p, a, b) => { const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1; let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)); };
+      return S.parcels.some((pc, i) => i !== S.activeParcel && pc.length >= 2 &&
+        pc.some((a, k) => dSeg(pt, a, pc[(k + 1) % pc.length]) < 2));
+    };
     const g = S.boundary.length >= 3 ? projectToBoundary(S.boundary, w) : w;   // snap the gate onto the perimeter edge
     if (S.params.access === 'single') S.entrances = [{ x: g.x, y: g.y, type: 'inout' }];   // single-gate: replace
     else S.entrances.push({ x: g.x, y: g.y, type: 'inout' });
-    toast(S.params.access === 'single' ? '單一出入口：已設定唯一閘口' : '已放出入口 — 選取可拖曳移動、雙擊改進/出、右鍵刪除');
+    toast(onCutLine(g)
+      ? '⚠️ 出入口落在子地分割線上 — 這是兩塊子地的共用邊界，動線可能不準，建議移到對外的邊'
+      : (S.params.access === 'single' ? '單一出入口：已設定唯一閘口' : '已放出入口 — 選取可拖曳移動、雙擊改進/出、右鍵刪除'));
     draw(); resolveActive();              // circulation responds to the new access point
     return;
   }
