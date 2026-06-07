@@ -2141,13 +2141,34 @@ function snap(w) {                   // 1-ft snap when zoomed in
   return w;
 }
 
+// True if any two non-adjacent edges of the closed polygon cross — a self-intersecting
+// ("bowtie") parcel. The solver survives it without crashing, but the layout comes out garbled,
+// so we warn rather than silently produce a broken plan.
+function polySelfIntersects(poly) {
+  const n = poly.length; if (n < 4) return false;
+  const cross = (ox, oy, ax, ay, bx, by) => (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+  const segCross = (p1, p2, p3, p4) => {
+    const d1 = cross(p3.x, p3.y, p4.x, p4.y, p1.x, p1.y), d2 = cross(p3.x, p3.y, p4.x, p4.y, p2.x, p2.y);
+    const d3 = cross(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y), d4 = cross(p1.x, p1.y, p2.x, p2.y, p4.x, p4.y);
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));   // strict interior crossing only
+  };
+  for (let i = 0; i < n; i++) {
+    const a = poly[i], b = poly[(i + 1) % n];
+    for (let j = i + 1; j < n; j++) {
+      if (j === i || j === (i + 1) % n || (j + 1) % n === i) continue;   // skip shared-vertex (adjacent) edges
+      if (segCross(a, b, poly[j], poly[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
 function finishDraft() {
   const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle') ? 2 : 3;
   if (!S.draft || S.draft.length < minPts) { S.draft = null; S.draftKind = null; draw(); return; }
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
-  if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null; msg = '基地完成，按「自動排車位」'; }
+  if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
+    msg = polySelfIntersects(poly) ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成，按「自動排車位」'; }
   else if (S.draftKind === 'building') {
     // a smaller shape drawn INSIDE an existing building becomes its void (courtyard)
     const host = S.buildings.find(b => PS.pointInPoly(PS.centroid(poly), b.poly) && PS.polyArea(poly) < PS.polyArea(b.poly));
