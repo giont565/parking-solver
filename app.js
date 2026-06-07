@@ -104,7 +104,7 @@ function updateFinancials(){    // refresh the pro-forma readout (massing-driven
   const el = $('#finReadout'); if (!el) return;
   const fin = (S.mode === 'site') ? (S.site && S.site.fin) : massingFinancials();
   if (!fin || !(fin.totalCost > 0)) { el.textContent = S.mode === 'site' ? '按「自動配置建案」後顯示財務' : '畫建築量體＋設定參數後自動試算開發財務'; return; }
-  el.innerHTML = `總開發成本 <b style="color:#e2e8f0">$${Math.round(fin.totalCost).toLocaleString()}</b>　·　年 NOI <b style="color:#e2e8f0">$${Math.round(fin.noi).toLocaleString()}</b><br>殖利率 Yield <b style="color:#4ade80">${fin.yieldOnCost.toFixed(1)}%</b>${fin.irr != null ? `　·　IRR <b style="color:#4ade80">${fin.irr.toFixed(1)}%</b>` : ''}`;
+  el.innerHTML = `總開發成本 <b style="color:#e2e8f0">$${Math.round(fin.totalCost).toLocaleString()}</b>　·　年 NOI <b style="color:#e2e8f0">$${Math.round(fin.noi).toLocaleString()}</b><br>投報率 Yield-on-cost <b style="color:#4ade80">${fin.yieldOnCost.toFixed(1)}%</b>${fin.irr != null ? `　·　IRR <b style="color:#4ade80">${fin.irr.toFixed(1)}%</b>` : ''}`;
 }
 function makeBuilding(poly){ return Object.assign({ poly }, bldgDefaults()); }
 function bPoly(b){ return Array.isArray(b) ? b : b.poly; }                 // footprint points
@@ -151,6 +151,7 @@ const U = {
   A(sf) { return this.metric() ? sf * SQM_PER_SQFT : sf; },    // sf -> display area
   Ar(v) { return this.metric() ? v / SQM_PER_SQFT : v; },      // display -> sf
   au() { return this.metric() ? 'm²' : 'SF'; },
+  fmtA(sf) { return Math.round(this.A(sf)).toLocaleString() + ' ' + this.au(); }, // area + unit
   big(sf) { return this.metric() ? sf * SQM_PER_SQFT / 10000 : sf / 43560; }, // ha | acre
   bu() { return this.metric() ? 'ha' : 'ac'; },
 };
@@ -448,28 +449,28 @@ function draw() {
       ind.trailerStalls.forEach(t => { pathPoly(t, true); ctx.fillStyle = 'rgba(234,179,8,.16)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(202,138,4,.8)'; ctx.stroke(); });
       fillVoids(S.site.footprint, S.site.footVoids, 'rgba(71,85,105,.82)', '#1e293b', 2);
       ctx.fillStyle = '#0f172a'; ind.dockDoors.forEach(d => { pathPoly(d, true); ctx.fill(); });
-      labelPoly(S.site.footprint, `倉儲 ${ind.dockType === 'cross' ? '雙面對流' : '單面'}卸貨 · ${ind.dockCount} 門 · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+      labelPoly(S.site.footprint, `倉儲 ${ind.dockType === 'cross' ? '雙面對流' : '單面'}卸貨 · ${ind.dockCount} 門 · ${U.fmtA(S.site.gfa)}`, '#e2e8f0');
     } else if (S.site.retail) {
       // RETAIL: anchor / inline-shop strip (the footprint) + pad outparcels near the street; the big lot is drawn as parking
       const rt = S.site.retail;
       fillVoids(rt.anchor, S.site.footVoids, 'rgba(37,99,235,.55)', '#1d4ed8', 2); hatch(rt.anchor, '#bfdbfe', .3);
       rt.pads.forEach(p => { pathPoly(p, true); ctx.fillStyle = 'rgba(99,102,241,.6)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#4338ca'; ctx.stroke(); });
-      labelPoly(rt.anchor, `零售中心 · ${rt.pads.length} pad 外帶店 · GLA ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+      labelPoly(rt.anchor, `零售中心 · ${rt.pads.length} pad 外帶店 · GLA ${U.fmtA(S.site.gfa)}`, '#e2e8f0');
     } else if (S.site.datacenter) {
       // DATA CENTRE: data-hall box + fenced mechanical/generator yard + substation pad
       const dc = S.site.datacenter;
       pathPoly(dc.mechYard, true); ctx.fillStyle = 'rgba(245,158,11,.14)'; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(217,119,6,.7)'; ctx.stroke(); hatch(dc.mechYard, '#f59e0b', .5);
       pathPoly(dc.subStation, true); ctx.fillStyle = 'rgba(220,38,38,.22)'; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = '#dc2626'; ctx.stroke(); hatch(dc.subStation, '#ef4444', .4);
       fillVoids(dc.hall, S.site.footVoids, 'rgba(51,65,85,.85)', '#0f172a', 2);
-      labelPoly(dc.hall, `資料機房 · ${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`, '#e2e8f0');
+      labelPoly(dc.hall, `資料機房 · ${S.site.floors}F · ${U.fmtA(S.site.gfa)}`, '#e2e8f0');
       const c = PS.centroid(dc.mechYard), sc = toScreen(c); ctx.fillStyle = 'rgba(120,53,15,.95)'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('機電中庭', sc.x, sc.y);
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
       fillVoids(S.site.footprint, S.site.footVoids, 'rgba(56,189,248,.42)', '#38bdf8', 2);
       hatch(S.site.footprint, '#bae6fd', .3);
       drawUnitPlan();
       const lbl = S.site.hotel ? `旅館 ${S.site.keys} 房 · ${S.site.floors}F`
-        : (S.site.unitPlan ? `${S.site.units} 戶 · ${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`
-        : `${S.site.floors}F · ${Math.round(S.site.gfa).toLocaleString()} SF`);
+        : (S.site.unitPlan ? `${S.site.units} 戶 · ${S.site.floors}F · ${U.fmtA(S.site.gfa)}`
+        : `${S.site.floors}F · ${U.fmtA(S.site.gfa)}`);
       labelPoly(S.site.footprint, lbl, '#e2e8f0');
     }
     // SERVICE CORES (stairs + elevators): user-placed cores override the auto-placed one when present
@@ -1504,7 +1505,7 @@ function updateTabBar() {
   const col = (title, kvs) => `<div class="col"><h5>${title}</h5>${kvs.map(k =>
     `<div class="kv"><span class="k">${k[0]}</span><span class="v">${k[1]}</span></div>`).join('')}</div>`;
   const siteKv = [['面積', `${U.big(area).toFixed(2)} ${U.bu()}`], ['', `${Math.round(U.A(area)).toLocaleString()} ${U.au()}`]];
-  if (S.mode === 'site' && S.site) siteKv.push(['FAR', S.site.far.toFixed(2)], ['建蔽', S.site.coverage.toFixed(0) + '%']);
+  if (S.mode === 'site' && S.site) siteKv.push(['FAR', S.site.far.toFixed(2)], ['建蔽率', S.site.coverage.toFixed(0) + '%']);
   let html = col('SITE 基地', siteKv);
   html += col('PARKING 停車', [['車位', stalls.toLocaleString()],
     ['單格', `${Math.round(U.A(moduleArea))} ${U.au()}`], ['覆蓋', cover + '%']]);
@@ -1519,7 +1520,7 @@ function updateTabBar() {
     const s = S.site;
     html += col('BUILDING 建築', [['GFA', Math.round(U.A(s.gfa)).toLocaleString()],
       [s.residential ? '戶數' : 'NRSF', s.residential ? s.units : Math.round(U.A(s.nrsf)).toLocaleString()],
-      ['停車', `${s.parkingProvided}/${s.parkingRequired}`], ['Yield', s.fin.yieldOnCost.toFixed(1) + '%']]);
+      ['停車', `${s.parkingProvided}/${s.parkingRequired}`], ['投報率', s.fin.yieldOnCost.toFixed(1) + '%']]);
     if (s.residential) {                      // unit-level tabulation: DU/AC · Beds · Baths
       let beds = 0, baths = 0;
       s.unitsByType.forEach(u => { beds += (BEDS[u.type] || 0) * u.count; baths += (BATHS[u.type] || 0) * u.count; });
@@ -2210,7 +2211,10 @@ function setTool(t) {
   if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; }
   draw();
 }
-document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
+document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tool.pulse-hint').forEach(t => t.classList.remove('pulse-hint'));
+  setTool(b.dataset.tool);
+}));
 
 /* ------------------------------ solving ---------------------------------- */
 function readParams() {
@@ -2393,10 +2397,10 @@ function saveScheme() {
   const name = ($('#schemeName').value || '').trim() || `方案 ${getSchemes().length + 1}`;
   let summary;
   if (S.mode === 'site') {
-    summary = S.site ? `${S.site.residential ? S.site.units + ' 戶' : Math.round(S.site.gfa).toLocaleString() + ' SF'} · ${S.site.floors}F` : '建案';
+    summary = S.site ? `${S.site.residential ? S.site.units + ' 戶' : U.fmtA(S.site.gfa)} · ${S.site.floors}F` : '建案';
   } else {
     const stalls = S.solution ? S.solution.stalls.length : 0, req = parkingDemand(), fin = massingFinancials();
-    summary = `${stalls} 車位${req ? `/需${req}` : ''} · ${S.params.angle}°${fin && fin.yieldOnCost ? ` · Yield ${fin.yieldOnCost.toFixed(1)}%` : ''}`;
+    summary = `${stalls} 車位${req ? `/需${req}` : ''} · ${S.params.angle}°${fin && fin.yieldOnCost ? ` · 投報率 ${fin.yieldOnCost.toFixed(1)}%` : ''}`;
   }
   const snap = {
     name, date: new Date().toISOString().slice(0, 10),
@@ -2530,15 +2534,36 @@ function exportJSON() {
   toast('已匯出 JSON');
 }
 function exportDXF() {
-  // R12 DXF: closed POLYLINE rings (CAD-native) + TEXT annotations
-  let s = '0\nSECTION\n2\nENTITIES\n';
+  // R12 DXF: closed POLYLINE rings (CAD-native) + TEXT annotations.
+  // Geometry is stored canonically in feet. We (1) write $INSUNITS so CAD opens at the
+  // right scale instead of "Unitless"/inches, (2) scale feet→metres when the user is in
+  // metric, and (3) translate the whole drawing into the positive quadrant near (0,0) so
+  // it doesn't land at huge offsets that force a Zoom-Extents hunt.
+  const k = U.metric() ? M_PER_FT : 1;            // feet -> metres (metric) | keep feet
+  const insunits = U.metric() ? 6 : 2;            // DXF $INSUNITS: 6=Metres, 2=Feet
+  const allPts = [];
+  const add = poly => { if (poly) for (const p of poly) allPts.push(p); };
+  add(S.boundary);
+  if (S.parcels) S.parcels.forEach(add);
+  S.buildings.forEach(b => { add(b.poly); (b.voids || []).forEach(add); });
+  S.obstacles.forEach(add);
+  if (S.mode === 'site' && S.site) { add(S.site.envelope); add(S.site.footprint); }
+  const park = activePark();
+  if (park) { park.stalls.forEach(st => add(st.poly)); park.aisles.forEach(a => add(a.poly)); if (park.accessAisles) park.accessAisles.forEach(a => add(a.poly)); }
+  let minX = Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of allPts) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+  if (!allPts.length) { minX = 0; minY = 0; maxY = 0; }
+  const TX = x => ((x - minX) * k).toFixed(3);
+  const TY = y => ((maxY - y) * k).toFixed(3);    // flip to CAD y-up + shift to origin
+  let s = `0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n${insunits}\n0\nENDSEC\n`;
+  s += '0\nSECTION\n2\nENTITIES\n';
   const ring = (poly, layer) => {                 // closed LWPOLYLINE-style POLYLINE
     s += `0\nPOLYLINE\n8\n${layer}\n66\n1\n70\n1\n`;
-    for (const p of poly) s += `0\nVERTEX\n8\n${layer}\n10\n${p.x.toFixed(3)}\n20\n${(-p.y).toFixed(3)}\n30\n0\n`;
+    for (const p of poly) s += `0\nVERTEX\n8\n${layer}\n10\n${TX(p.x)}\n20\n${TY(p.y)}\n30\n0\n`;
     s += '0\nSEQEND\n';
   };
   const text = (p, h, str, layer) =>
-    s += `0\nTEXT\n8\n${layer}\n10\n${p.x.toFixed(3)}\n20\n${(-p.y).toFixed(3)}\n30\n0\n40\n${h}\n1\n${String(str).replace(/\n/g, ' ')}\n`;
+    s += `0\nTEXT\n8\n${layer}\n10\n${TX(p.x)}\n20\n${TY(p.y)}\n30\n0\n40\n${(h * k).toFixed(3)}\n1\n${String(str).replace(/\n/g, ' ')}\n`;
   if (S.boundary.length) ring(S.boundary, 'SITE');
   if (S.parcels) S.parcels.forEach((pc, i) => { if (pc !== S.boundary) ring(pc, 'SUBPARCEL_' + String.fromCharCode(65 + i)); });
   S.buildings.forEach(b => { ring(b.poly, 'BUILDING'); (b.voids || []).forEach(v => ring(v, 'BUILDING_VOID')); });
@@ -2547,7 +2572,6 @@ function exportDXF() {
     if (S.site.envelope.length) ring(S.site.envelope, 'BUILDABLE_ENVELOPE');
     if (S.site.footprint.length) ring(S.site.footprint, 'BUILDING_MASSING');
   }
-  const park = activePark();
   if (park) {
     park.stalls.forEach(st => ring(st.poly, 'STALL_' + st.type.toUpperCase()));
     park.aisles.forEach(a => ring(a.poly, 'AISLE'));
@@ -2558,7 +2582,7 @@ function exportDXF() {
     const bb = PS.bbox(S.boundary);
     const stalls = park ? park.stalls.length : 0;
     text({ x: bb.minX, y: bb.maxY + 24 }, 12, `Urbanweave 城織 — ${stalls} stalls @ ${new Date().toISOString().slice(0, 10)}`, 'ANNOTATION');
-    if (S.mode === 'site' && S.site) text({ x: bb.minX, y: bb.maxY + 8 }, 9, `GFA ${Math.round(S.site.gfa)} sf · FAR ${S.site.far.toFixed(2)} · ${S.site.floors}F`, 'ANNOTATION');
+    if (S.mode === 'site' && S.site) text({ x: bb.minX, y: bb.maxY + 8 }, 9, `GFA ${U.fmtA(S.site.gfa)} · FAR ${S.site.far.toFixed(2)} · ${S.site.floors}F`, 'ANNOTATION');
   }
   s += '0\nENDSEC\n0\nEOF\n';
   dl('parking-layout.dxf', new Blob([s], { type: 'application/dxf' }));
@@ -2678,6 +2702,13 @@ let toastT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200);
+}
+// Basemap tiles failed AND the browser reports offline → nag once that only the map
+// is down; design + export still work. Reset by the 'online' listener (set up with the map).
+function tileFailToast() {
+  if (S._offlineToastShown || navigator.onLine) return;
+  S._offlineToastShown = true;
+  toast('⚠️ 離線模式：地圖底圖暫停，但設計與匯出仍可正常使用');
 }
 
 /* ----------------------------- sample site ------------------------------- */
@@ -2941,7 +2972,7 @@ function doSolveSite() {
     $('#busy').classList.remove('show');
     updateSiteMetrics(); draw(); commit(); saveParcelDev();
     const ms = Math.round(performance.now() - t0);
-    if (S.site) toast(`建案：${S.site.residential ? S.site.units + ' 戶' : Math.round(S.site.gfa).toLocaleString() + ' SF'} · ${S.site.floors}F · ${ms}ms`);
+    if (S.site) toast(`建案：${S.site.residential ? S.site.units + ' 戶' : U.fmtA(S.site.gfa)} · ${S.site.floors}F · ${ms}ms`);
     $('#stMsg').textContent = S.site ? `建案 ${S.site.floors}F · FAR ${S.site.far.toFixed(2)}` : '無法配置';
   }, 30);
 }
@@ -3168,6 +3199,9 @@ function enableMap(on) {
       S.tileStreet = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 23, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
       S.tileSat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 23, maxNativeZoom: 19, attribution: 'Tiles © Esri' });
       S.tileSat.addTo(S.map);
+      S.tileStreet.on('tileerror', tileFailToast);
+      S.tileSat.on('tileerror', tileFailToast);
+      window.addEventListener('online', () => { S._offlineToastShown = false; });
       S.bases = { esri: S.tileSat, osm: S.tileStreet }; S.baseKey = 'esri'; S.twOv = {};
       L.control.scale({ imperial: true, metric: true, position: 'bottomleft' }).addTo(S.map);
       S.map.on('move zoom moveend zoomend resize', () => draw());
@@ -3212,6 +3246,7 @@ function ensureBase(key) {
   if (key === 'photo2') lyr = L.tileLayer(nlscUrl('PHOTO2'), { maxZoom: 23, maxNativeZoom: 20, attribution: '台灣空照 ' + NLSC_ATTR });
   else if (key === 'emap') lyr = L.tileLayer(nlscUrl('EMAP'), { maxZoom: 23, maxNativeZoom: 20, attribution: '電子地圖 ' + NLSC_ATTR });
   else lyr = key === 'osm' ? S.tileStreet : S.tileSat;
+  if (key === 'photo2' || key === 'emap') lyr.on('tileerror', tileFailToast);
   S.bases[key] = lyr; return lyr;
 }
 function setBase(key) {
@@ -3430,7 +3465,7 @@ function generateOptions() {
           kpi: sol.parkingProvided, thumb: thumbFor(sol.parkSol, sol.footprint),
           k_park: sol.parkingProvided, k_yield: sol.fin.yieldOnCost, k_units: sol.units,
           big: sol.residential ? sol.units + ' 戶' : Math.round(U.A(sol.gfa)).toLocaleString() + ' ' + U.au(),
-          sub: `${pc.name}${b.name ? ' · ' + b.name : ''} · ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired}<br>Yield ${sol.fin.yieldOnCost.toFixed(1)}%`,
+          sub: `${pc.name}${b.name ? ' · ' + b.name : ''} · ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired}<br>投報率 ${sol.fin.yieldOnCost.toFixed(1)}%`,
           pass: sol.parkingProvided >= sol.parkingRequired,
         });
       }
@@ -3451,7 +3486,7 @@ function generateOptions() {
     if (!_genRaw.length) { toast('無法產生方案'); return; }
     // custom KPI sorting (TestFit-style): pick which KPI ranks the options
     const sorts = S.mode === 'site'
-      ? [['k_park', '提供車位'], ['k_yield', 'Yield 報酬'], ['k_units', '戶數']]
+      ? [['k_park', '提供車位'], ['k_yield', '投報率'], ['k_units', '戶數']]
       : [['k_count', '車位數']];
     const sel = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;color:var(--muted);">
         排序依據 KPI：<select id="genSort" style="background:#0f1a2b;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 8px;">
@@ -3502,7 +3537,7 @@ function exportReport() {
     if (s.residential) rows.push(['戶數 Units', s.units], ['密度 Density', (s.units / s.acres).toFixed(1) + ' DU/ac']);
     rows.push(['停車 供/需 Parking', `${s.parkingProvided} / ${s.parkingRequired}`],
       ['土建成本 Cost', '$' + Math.round(s.fin.totalCost).toLocaleString()], ['NOI', '$' + Math.round(s.fin.noi).toLocaleString() + ' /yr'],
-      ['Yield on Cost', s.fin.yieldOnCost.toFixed(2) + '%']);
+      ['投報率 Yield-on-cost', s.fin.yieldOnCost.toFixed(2) + '%']);
     comp = '<h3>法規檢核 Zoning Compliance</h3><table>' +
       s.compliance.map(c => `<tr><td>${esc(c.k)}</td><td>${c.ok ? '✅ 通過' : '❌ 不符'}</td><td>${esc(c.val)}</td></tr>`).join('') + '</table>';
   } else if (S.solution) {
@@ -3545,17 +3580,17 @@ function compareSchemes() {
     const d = sc.data || {};
     if (sc.mode === 'site' && d.site) {
       const s = d.site;
-      return { '類型': '🏢 建案', '車位數': '—', '戶數/GFA': s.residential ? s.units + ' 戶' : Math.round(s.gfa).toLocaleString() + ' SF',
+      return { '類型': '🏢 建案', '車位數': '—', '戶數/GFA': s.residential ? s.units + ' 戶' : U.fmtA(s.gfa),
         FAR: s.far.toFixed(2), '樓層': s.floors + 'F', '建蔽率': s.coverage.toFixed(0) + '%',
-        '停車 供/需': `${s.parkingProvided}/${s.parkingRequired}`, Yield: s.fin.yieldOnCost.toFixed(1) + '%' };
+        '停車 供/需': `${s.parkingProvided}/${s.parkingRequired}`, '投報率': s.fin.yieldOnCost.toFixed(1) + '%' };
     }
     const sol = d.solution;
     return { '類型': '🅿️ 停車', '車位數': sol ? sol.stalls.length : (sc.summary || '—'),
       '戶數/GFA': '—', FAR: '—', '樓層': '—', '建蔽率': '—',
-      '停車 供/需': '—', Yield: '—', '配置角度': sol && sol.metrics ? sol.metrics.bestAngleDeg + '°' : '—' };
+      '停車 供/需': '—', '投報率': '—', '配置角度': sol && sol.metrics ? sol.metrics.bestAngleDeg + '°' : '—' };
   };
   const cols = arr.map(metric);
-  const keys = ['類型', '車位數', '配置角度', '戶數/GFA', 'FAR', '樓層', '建蔽率', '停車 供/需', 'Yield'];
+  const keys = ['類型', '車位數', '配置角度', '戶數/GFA', 'FAR', '樓層', '建蔽率', '停車 供/需', '投報率'];
   let html = '<table class="cmptable"><tr><th>項目</th>' + arr.map(sc => `<th>${esc((sc.mode === 'site' ? '🏢 ' : '🅿️ ') + sc.name)}</th>`).join('') + '</tr>';
   for (const k of keys) {
     if (!cols.some(c => c[k] != null && c[k] !== '—')) continue;
@@ -3625,7 +3660,7 @@ function takeoffRows() {
     hdr('收益 Revenue');
     rows.push(['年收入 Annual', '$' + Math.round(s.fin.annualRevenue).toLocaleString()]);
     rows.push(['NOI', '$' + Math.round(s.fin.noi).toLocaleString() + ' /yr']);
-    rows.push(['Yield on Cost', s.fin.yieldOnCost.toFixed(2) + '%']);
+    rows.push(['投報率 Yield-on-cost', s.fin.yieldOnCost.toFixed(2) + '%']);
     hdr('投資報酬 Returns');
     rows.push([`退場價值 Exit Value (${$('#fExitCap').value}% cap)`, '$' + Math.round(s.fin.exitValue).toLocaleString()]);
     rows.push([`IRR · ${s.fin.holdYears} 年未槓桿`, s.fin.irr == null ? '—' : s.fin.irr.toFixed(1) + '%']);
@@ -4162,6 +4197,15 @@ function boot() {
   });
   ro.observe($('#stage'));
   setTimeout(() => { $('#help').style.display = 'none'; }, 9000);  // auto-hide help
+  // First visit ever: glow the 基地 (draw-boundary) tool so the user knows where to start
+  // their own design. Cleared on the first tool click; the flag stops it recurring.
+  try {
+    if (!localStorage.getItem('uw_seen')) {
+      const bt = document.querySelector('.tool[data-tool="boundary"]');
+      if (bt) bt.classList.add('pulse-hint');
+      localStorage.setItem('uw_seen', '1');
+    }
+  } catch (e) {}
   const shareId = new URLSearchParams(location.search).get('p');   // ?p=<id> → open a shared project (no login needed)
   if (shareId) setTimeout(() => cloudOpenShared(shareId), 200);
 }
