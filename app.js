@@ -1007,7 +1007,16 @@ function drawCrosswalk(X, dir, perp, span, dist) {   // zebra bands at ±dist al
     }
   }
 }
-function drawIntersections() {
+function fillRoundQuad(quadWorld, rFt, sc) {   // path a quad with rounded corners (curb returns); caller fills/strokes
+  const q = quadWorld.map(toScreen);
+  let minE = 1e9; for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4]; minE = Math.min(minE, Math.hypot(b.x - a.x, b.y - a.y)); }
+  const r = Math.min(rFt * sc, minE * 0.45);
+  ctx.beginPath();
+  const m0 = { x: (q[0].x + q[1].x) / 2, y: (q[0].y + q[1].y) / 2 }; ctx.moveTo(m0.x, m0.y);
+  for (let i = 0; i < 4; i++) { const v = q[(i + 1) % 4], nx = q[(i + 2) % 4]; ctx.arcTo(v.x, v.y, nx.x, nx.y, r); }
+  ctx.closePath();
+}
+function drawIntersections(sc) {
   const roads = (S.roadLines || []).filter(r => r.profile && r.profile.length);
   for (let i = 0; i < roads.length; i++) for (let j = i + 1; j < roads.length; j++) {
     const A = roads[i], B = roads[j], Wa = profileWidth(A), Wb = profileWidth(B), pWa = pavedW(A), pWb = pavedW(B);
@@ -1016,8 +1025,9 @@ function drawIntersections() {
       const pa = { x: -X.dA.y, y: X.dA.x }, pb = { x: -X.dB.y, y: X.dB.x };
       const corner = (sa, sb) => lineX({ x: X.x + pa.x * sa * Wa / 2, y: X.y + pa.y * sa * Wa / 2 }, X.dA, { x: X.x + pb.x * sb * Wb / 2, y: X.y + pb.y * sb * Wb / 2 }, X.dB);
       const quad = [corner(1, 1), corner(1, -1), corner(-1, -1), corner(-1, 1)];
-      pathPoly(quad, true); ctx.fillStyle = '#3a4150'; ctx.fill();                 // clean paved junction (hides the overlapping bands)
-      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(34,42,56,.9)'; ctx.stroke();    // curb outline
+      pathPoly(quad, true); ctx.fillStyle = '#79828f'; ctx.fill();                 // sidewalk base → the cut corners read as rounded curb returns
+      fillRoundQuad(quad, 16, sc); ctx.fillStyle = '#3a4150'; ctx.fill();          // rounded asphalt junction (curb-return corners)
+      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(34,42,56,.95)'; ctx.stroke();   // curb outline (rounded)
       drawCrosswalk(X, X.dA, pa, pWa, Wb / 2 - 3);                                 // crossing street A (on B's two approaches)
       drawCrosswalk(X, X.dB, pb, pWb, Wa / 2 - 3);                                 // crossing street B
     }
@@ -1029,7 +1039,7 @@ function drawRoads() {
   if (!lines.length) { for (const r of (S.roads || [])) { pathPoly(r, true); ctx.fillStyle = 'rgba(71,85,105,.9)'; ctx.fill(); } return; }  // legacy saves: flat strips
   const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);   // px per foot (map-safe)
   for (const rd of lines) if (rd.profile && rd.profile.length) drawRoadProfile(rd, sc);   // composable street sections
-  drawIntersections();                                                                    // clean paved junctions + crosswalks where streets cross
+  drawIntersections(sc);                                                                   // clean paved junctions + curb returns + crosswalks where streets cross
   const flat = lines.filter(rd => !rd.profile || !rd.profile.length);                     // legacy / no-profile roads → smooth flat asphalt
   if (flat.length) {
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -2411,7 +2421,7 @@ function serialize() {
     mode: S.mode,
     boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
     entrances: S.entrances, params: S.params, opts: S.opts,
-    parcels: S.parcels, activeParcel: S.activeParcel, edgeSetback: S.edgeSetback,
+    parcels: S.parcels, activeParcel: S.activeParcel, parcelDev: S.parcelDev, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
       connectors: S.solution.connectors, accessAisles: S.solution.accessAisles, unreachable: S.solution.unreachable } : null,
     site: S.site, siteForm: getSiteForm(),
@@ -2420,7 +2430,7 @@ function serialize() {
 function deserialize(d) {
   S.boundary = d.boundary || []; S.buildings = d.buildings || [];
   S.obstacles = d.obstacles || []; S.roads = d.roads || []; S.roadLines = d.roadLines || []; S.parkZones = d.parkZones || []; S.manualCores = d.manualCores || []; S.entrances = d.entrances || [];
-  S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0; S.parcelDev = null;
+  S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0; S.parcelDev = d.parcelDev || null;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
   Object.assign(S.params, d.params || {}); Object.assign(S.opts, d.opts || {});
@@ -3891,7 +3901,7 @@ function buildObjTree() {
     S.parcels.forEach((pc, i) =>
       row(2, i === S.activeParcel ? '📍' : '▫️', '子地 ' + String.fromCharCode(65 + i),
         U.big(PS.polyArea(pc)).toFixed(2) + U.bu(), () => setActiveParcel(i)));
-    row(1, '⚡', '一鍵生成全子地', '點我', developAllParcels);
+    row(1, '⚡', '一鍵生成全子地', '設用途', openMasterSetup);
     const mp = masterPlanTotals();
     if (mp) row(1, '🗺️', '總圖彙總表 Master Plan', `${mp.developed}/${mp.parcels} 開發 · ${mp.units ? mp.units + ' 戶 · ' : ''}${mp.stalls.toLocaleString()} 車位`, openMasterTable);
   }
@@ -3972,21 +3982,34 @@ function masterPlanTotals() {   // aggregate every developed parcel → the mast
   return { parcels: S.parcels.length, developed, units, gfa: Math.round(gfa), stalls };
 }
 const SITE_USE_LABEL = { multifamily: '多戶住宅', tower: '高層塔樓', garden: '花園公寓', singlefamily: '單戶/連棟', mixeduse: '複合用途', office: '辦公', retail: '零售', hotel: '旅館', industrial: '工業', datacenter: '資料中心' };
-function developAllParcels() {   // ONE-CLICK: develop every sub-parcel (same use) → fills out the whole master plan at once
+function developAllParcels(uses) {   // develop every sub-parcel → fills the whole master plan. `uses` = optional {parcelIdx: useType} for per-parcel uses; else all use the panel use
   if (!S.parcels || S.parcels.length < 2) { toast('先用「切割」工具把基地分成多塊子地'); return; }
   saveParcelDev();
-  const p = readSiteParams(), use = ($('#sUse') ? $('#sUse').value : '');
+  const base = readSiteParams(), panelUse = ($('#sUse') ? $('#sUse').value : 'multifamily');
   S.parcelDev = S.parcelDev || []; let n = 0;
   S.parcels.forEach((pc, i) => {
     if (!pc || pc.length < 3) return;
-    const site = PS.solveSite({ boundary: pc, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
+    const use = (uses && uses[i]) || panelUse;
+    const site = PS.solveSite({ boundary: pc, p: { ...base, useType: use }, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
     if (site) { if (site.parkSol) deriveSpines(site.parkSol); S.parcelDev[i] = { mode: 'site', site, solution: null, buildings: [], use }; n++; }
   });
   const a = S.parcelDev[S.activeParcel];
   if (a) { S.site = a.site; S.solution = a.solution; S.buildings = a.buildings || []; }
   S.boundary = S.parcels[S.activeParcel]; S.mode = 'site';
   setMode('site'); updateSiteMetrics(); draw(); fitView(); commit();
-  toast(`已一鍵生成 ${n} 塊子地（用途：${SITE_USE_LABEL[use] || use}）`);
+  toast(`已生成 ${n} 塊子地`);
+}
+function openMasterSetup() {   // per-parcel USE picker → develop all (the convenient master-plan setup)
+  if (!S.parcels || S.parcels.length < 2) { toast('先用「切割」工具把基地分成多塊子地（≥2）'); return; }
+  const def = ($('#sUse') ? $('#sUse').value : 'multifamily');
+  let rows = '';
+  S.parcels.forEach((pc, i) => {
+    const cur = (S.parcelDev && S.parcelDev[i] && S.parcelDev[i].use) || def;
+    const opts = Object.keys(SITE_USE_LABEL).map(k => `<option value="${k}" ${k === cur ? 'selected' : ''}>${SITE_USE_LABEL[k]}</option>`).join('');
+    rows += `<tr><td>子地 ${String.fromCharCode(65 + i)}</td><td>${U.big(PS.polyArea(pc)).toFixed(2)} ${U.bu()}</td><td><select data-parcel="${i}" class="msel">${opts}</select></td></tr>`;
+  });
+  openModal('總圖設定 — 各子地用途', `<table class="mptab"><thead><tr><th>子地</th><th>面積</th><th>用途</th></tr></thead><tbody>${rows}</tbody></table><div style="text-align:center;margin-top:14px;"><button id="mpGen" class="genbtn">⚡ 生成全部子地</button></div>`);
+  const g = $('#mpGen'); if (g) g.onclick = () => { const uses = {}; document.querySelectorAll('.msel').forEach(s => uses[+s.dataset.parcel] = s.value); closeModal(); developAllParcels(uses); };
 }
 function openMasterTable() {   // Master Plan tabulation — per-parcel breakdown + totals (TestFit-style)
   if (!S.parcels || S.parcels.length < 2) { toast('先用「切割」分成多塊子地，再「一鍵生成全子地」'); return; }
@@ -4052,7 +4075,7 @@ async function cloudInit() {
   return _fb;
 }
 function updateCloudBtn() { const b = $('#btnCloud'); if (b) b.classList.toggle('on', !!_fbUser); }
-function cloudProject() { const s = serialize(); delete s.solution; delete s.site; return s; }   // inputs only → small doc, re-solve on load
+function cloudProject() { const s = serialize(); delete s.solution; delete s.site; if (s.parcelDev) s.parcelDev = s.parcelDev.map(d => d ? { use: d.use, mode: d.mode } : null); return s; }   // inputs only → small doc, re-solve / re-generate on load
 function loadCloudData(d) { deserialize(d); setTimeout(() => { if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); } else if (S.boundary.length >= 3) doSolve(); }, 40); }
 async function cloudShareLink() {
   const { db } = await cloudInit();
