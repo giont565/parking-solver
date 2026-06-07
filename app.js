@@ -3891,8 +3891,9 @@ function buildObjTree() {
     S.parcels.forEach((pc, i) =>
       row(2, i === S.activeParcel ? '📍' : '▫️', '子地 ' + String.fromCharCode(65 + i),
         U.big(PS.polyArea(pc)).toFixed(2) + U.bu(), () => setActiveParcel(i)));
+    row(1, '⚡', '一鍵生成全子地', '點我', developAllParcels);
     const mp = masterPlanTotals();
-    if (mp) row(1, '🗺️', '總圖 Master Plan', `${mp.developed}/${mp.parcels} 開發 · ${mp.units ? mp.units + ' 戶 · ' : ''}${mp.stalls.toLocaleString()} 車位`, () => {});
+    if (mp) row(1, '🗺️', '總圖彙總表 Master Plan', `${mp.developed}/${mp.parcels} 開發 · ${mp.units ? mp.units + ' 戶 · ' : ''}${mp.stalls.toLocaleString()} 車位`, openMasterTable);
   }
   if (S.mode === 'site') {
     row(2, '🏢', '建築 Building', S.site ? (S.site.residential ? S.site.units + ' 戶' : S.site.floors + 'F') : '—', () => { setMode('site'); gotoGroup('開發類型'); }, 'building');
@@ -3942,7 +3943,7 @@ function splitParcel(p, q) {
 function saveParcelDev() {
   if (!S.parcels || S.parcels.length < 2) return;
   S.parcelDev = S.parcelDev || [];
-  S.parcelDev[S.activeParcel] = { mode: S.mode, site: S.site, solution: S.solution, buildings: S.buildings };
+  S.parcelDev[S.activeParcel] = { mode: S.mode, site: S.site, solution: S.solution, buildings: S.buildings, use: ($('#sUse') ? $('#sUse').value : '') };
 }
 function drawParcelOverlay(dev) {   // render ONE non-active parcel's saved development (parking + massing) for the master-plan overview
   if (!dev) return;
@@ -3969,6 +3970,44 @@ function masterPlanTotals() {   // aggregate every developed parcel → the mast
     else if (d.solution) stalls += d.solution.stalls.length;
   }
   return { parcels: S.parcels.length, developed, units, gfa: Math.round(gfa), stalls };
+}
+const SITE_USE_LABEL = { multifamily: '多戶住宅', tower: '高層塔樓', garden: '花園公寓', singlefamily: '單戶/連棟', mixeduse: '複合用途', office: '辦公', retail: '零售', hotel: '旅館', industrial: '工業', datacenter: '資料中心' };
+function developAllParcels() {   // ONE-CLICK: develop every sub-parcel (same use) → fills out the whole master plan at once
+  if (!S.parcels || S.parcels.length < 2) { toast('先用「切割」工具把基地分成多塊子地'); return; }
+  saveParcelDev();
+  const p = readSiteParams(), use = ($('#sUse') ? $('#sUse').value : '');
+  S.parcelDev = S.parcelDev || []; let n = 0;
+  S.parcels.forEach((pc, i) => {
+    if (!pc || pc.length < 3) return;
+    const site = PS.solveSite({ boundary: pc, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
+    if (site) { if (site.parkSol) deriveSpines(site.parkSol); S.parcelDev[i] = { mode: 'site', site, solution: null, buildings: [], use }; n++; }
+  });
+  const a = S.parcelDev[S.activeParcel];
+  if (a) { S.site = a.site; S.solution = a.solution; S.buildings = a.buildings || []; }
+  S.boundary = S.parcels[S.activeParcel]; S.mode = 'site';
+  setMode('site'); updateSiteMetrics(); draw(); fitView(); commit();
+  toast(`已一鍵生成 ${n} 塊子地（用途：${SITE_USE_LABEL[use] || use}）`);
+}
+function openMasterTable() {   // Master Plan tabulation — per-parcel breakdown + totals (TestFit-style)
+  if (!S.parcels || S.parcels.length < 2) { toast('先用「切割」分成多塊子地，再「一鍵生成全子地」'); return; }
+  saveParcelDev();
+  const fmtA = sf => Math.round(U.A(sf)).toLocaleString() + ' ' + U.au();
+  let body = '', tArea = 0, tUnits = 0, tGfa = 0, tStalls = 0;
+  S.parcels.forEach((pc, i) => {
+    const d = S.parcelDev && S.parcelDev[i], area = PS.polyArea(pc); tArea += area;
+    let use = '—', units = '—', gfa = '—', stalls = '—';
+    if (d && d.site) {
+      use = SITE_USE_LABEL[d.use] || d.use || (d.site.residential ? '住宅' : '商用');
+      const u = d.site.units || 0, g = d.site.gfa || 0, s = d.site.parkingProvided || (d.site.parkSol ? d.site.parkSol.stalls.length : 0);
+      units = d.site.residential ? u.toLocaleString() : '—'; gfa = fmtA(g); stalls = s.toLocaleString();
+      tUnits += u; tGfa += g; tStalls += s;
+    } else if (d && d.solution) { use = '停車場'; const s = d.solution.stalls.length; stalls = s.toLocaleString(); tStalls += s; }
+    body += `<tr><td>子地 ${String.fromCharCode(65 + i)}</td><td>${use}</td><td>${U.big(area).toFixed(2)} ${U.bu()}</td><td>${units}</td><td>${gfa}</td><td>${stalls}</td></tr>`;
+  });
+  const html = `<table class="mptab"><thead><tr><th>子地 Parcel</th><th>用途 Use</th><th>面積 Area</th><th>戶數 Units</th><th>樓地板 GFA</th><th>車位 Stalls</th></tr></thead><tbody>${body}</tbody>`
+    + `<tfoot><tr><td>總計 Master Plan</td><td>${S.parcels.length} 塊</td><td>${U.big(tArea).toFixed(2)} ${U.bu()}</td><td>${tUnits.toLocaleString()}</td><td>${fmtA(tGfa)}</td><td>${tStalls.toLocaleString()}</td></tr></tfoot></table>`
+    + `<div style="font-size:11px;color:var(--muted);margin-top:10px;">概念性可行性估算 · 由 Urbanweave 城織 產生</div>`;
+  openModal('總圖彙總 Master Plan', html);
 }
 function setActiveParcel(i) {
   if (!S.parcels || !S.parcels[i]) return;
