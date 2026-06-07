@@ -2611,12 +2611,39 @@ function exportDXF() {
     park.aisles.forEach(a => ring(a.poly, 'AISLE'));
     if (park.accessAisles) park.accessAisles.forEach(a => ring(a.poly, 'ADA_ACCESS'));
   }
-  // TEXT annotations (title / stall count / date) above the site
+  // TITLE BLOCK + LEGEND. ASCII ONLY — R12 DXF TEXT can't carry Chinese / em-dash / middot
+  // reliably (they render as "?"), so everything here is plain ASCII. Both blocks are laid out
+  // BELOW the drawing (the maxY side), each call steps further out so lines don't overlap.
   if (S.boundary.length >= 3) {
     const bb = PS.bbox(S.boundary);
     const stalls = park ? park.stalls.length : 0;
-    text({ x: bb.minX, y: bb.maxY + 24 }, 12, `Urbanweave 城織 — ${stalls} stalls @ ${new Date().toISOString().slice(0, 10)}`, 'ANNOTATION');
-    if (S.mode === 'site' && S.site) text({ x: bb.minX, y: bb.maxY + 8 }, 9, `GFA ${U.fmtA(S.site.gfa)} · FAR ${S.site.far.toFixed(2)} · ${S.site.floors}F`, 'ANNOTATION');
+    const ac = PS.polyArea(S.boundary) / 43560;
+    let ay = bb.maxY + 12; const LH = 9;
+    const put = (str, h, layer) => { text({ x: bb.minX, y: ay }, h || 6, str, layer || 'ANNOTATION'); ay += LH; };
+    put(`PARCELWEAVE  |  ${new Date().toISOString().slice(0, 10)}`, 8);
+    put(`Site area: ${ac.toFixed(2)} ac / ${(ac * 0.40469).toFixed(2)} ha`, 6);
+    if (park) put(`Parking: ${stalls} stalls @ ${S.params.angle}deg`, 6);
+    if (S.mode === 'site' && S.site) {
+      const s = S.site;
+      put(`GFA ${Math.round(s.gfa).toLocaleString()} sf  FAR ${s.far.toFixed(2)}  ${s.floors}F  Coverage ${s.coverage.toFixed(0)}%`, 6);
+      if (s.residential) put(`Units: ${s.units}`, 6);
+      put(`Parking provided/required: ${s.parkingProvided}/${s.parkingRequired}`, 6);
+    }
+    // LEGEND — only the layers actually present in this drawing
+    ay += 6;
+    put('LEGEND (DXF layers):', 6, 'LEGEND');
+    const leg = [['SITE', 'parcel boundary']];
+    if (S.parcels && S.parcels.length > 1) leg.push(['SUBPARCEL_A..', 'sub-parcels']);
+    if (S.buildings.length) leg.push(['BUILDING', 'building footprint']);
+    if (S.buildings.some(b => (b.voids || []).length)) leg.push(['BUILDING_VOID', 'courtyard / void']);
+    if (S.obstacles.length) leg.push(['OBSTACLE', 'exclusion zone']);
+    if (S.mode === 'site' && S.site) { leg.push(['BUILDABLE_ENVELOPE', 'setback line'], ['BUILDING_MASSING', 'massing footprint']); }
+    if (park && park.stalls.length) {
+      [...new Set(park.stalls.map(st => st.type))].forEach(t => leg.push(['STALL_' + t.toUpperCase(), t + ' stall']));
+      leg.push(['AISLE', 'drive aisle']);
+      if (park.accessAisles && park.accessAisles.length) leg.push(['ADA_ACCESS', 'accessible aisle']);
+    }
+    leg.forEach(([lay, desc]) => put(`  ${lay} = ${desc}`, 5, 'LEGEND'));
   }
   s += '0\nENDSEC\n0\nEOF\n';
   dl('parking-layout.dxf', new Blob([s], { type: 'application/dxf' }));
@@ -2649,7 +2676,7 @@ function exportOBJ() {
   if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) box(S.site.footprint, S.site.height, 'massing');
   const park = activePark();
   if (park) park.stalls.forEach((s, i) => flat(s.poly, 0.1, 'stall_' + (i + 1) + '_' + s.type));
-  const obj = '# Urbanweave 城織 — 3D massing (Wavefront OBJ); units: feet; Y = up\n' + V.join('\n') + '\n' + F.join('\n') + '\n';
+  const obj = '# parcelweave 城織 — 3D massing (Wavefront OBJ); units: feet; Y = up\n' + V.join('\n') + '\n' + F.join('\n') + '\n';
   dl((S.mode === 'site' ? 'site' : 'parking') + '-massing.obj', new Blob([obj], { type: 'text/plain' }));
   toast('已匯出 3D 模型 .obj（可匯入 SketchUp / Blender / Rhino）');
 }
@@ -2713,7 +2740,7 @@ function exportGLTF() {
     materials.push({ name: g.key, pbrMetallicRoughness: { baseColorFactor: g.color, metallicFactor: 0, roughnessFactor: 0.85 }, doubleSided: true });
     primitives.push({ attributes: { POSITION: 0 }, indices: i + 1, material: i });
   });
-  const gltf = { asset: { version: '2.0', generator: 'Urbanweave 城織' }, scene: 0, scenes: [{ nodes: [0] }],
+  const gltf = { asset: { version: '2.0', generator: 'parcelweave 城織' }, scene: 0, scenes: [{ nodes: [0] }],
     nodes: [{ mesh: 0, name: (S.mode === 'site' ? 'site' : 'parking') + '_model' }], meshes: [{ primitives }],
     materials, accessors, bufferViews, buffers: [{ byteLength: binLen }] };
   const enc = new TextEncoder();
@@ -3596,7 +3623,7 @@ h3{font-size:14px;margin:14px 0 6px;}.foot{color:#94a3b8;font-size:11px;margin-t
 <h1>${esc(title)}</h1>
 <div class="meta">地點：${esc($('#addrInput') ? $('#addrInput').value : '')} ｜ 日期：${date} ｜ 面積：${fmtA(area)} (${U.big(area).toFixed(2)} ${U.bu()})</div>
 <img src="${img}"><table>${rowsHtml}</table>${comp}
-<div class="foot">由 Urbanweave 城織 產生 · 概念性可行性估算，非正式工程／法律文件</div>
+<div class="foot">由 parcelweave 城織 產生 · 概念性可行性估算，非正式工程／法律文件</div>
 <button class="noprint" onclick="window.print()" style="margin-top:8px;padding:9px 18px;font-size:13px;cursor:pointer;">🖨️ 列印 / 存成 PDF</button>
 </body></html>`;
   const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));   // no document.write
@@ -4098,7 +4125,7 @@ function openMasterTable() {   // Master Plan tabulation — per-parcel breakdow
   });
   const html = `<table class="mptab"><thead><tr><th>子地 Parcel</th><th>用途 Use</th><th>面積 Area</th><th>戶數 Units</th><th>樓地板 GFA</th><th>車位 Stalls</th></tr></thead><tbody>${body}</tbody>`
     + `<tfoot><tr><td>總計 Master Plan</td><td>${S.parcels.length} 塊</td><td>${U.big(tArea).toFixed(2)} ${U.bu()}</td><td>${tUnits.toLocaleString()}</td><td>${fmtA(tGfa)}</td><td>${tStalls.toLocaleString()}</td></tr></tfoot></table>`
-    + `<div style="font-size:11px;color:var(--muted);margin-top:10px;">概念性可行性估算 · 由 Urbanweave 城織 產生</div>`;
+    + `<div style="font-size:11px;color:var(--muted);margin-top:10px;">概念性可行性估算 · 由 parcelweave 城織 產生</div>`;
   openModal('總圖彙總 Master Plan', html);
 }
 function setActiveParcel(i) {
