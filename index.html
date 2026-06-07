@@ -128,6 +128,12 @@
   #roadPopup button.active{background:#facc15;color:#1a1a1a;border-color:#facc15;}
   #roadPopup button.del{color:var(--bad);}
   #roadPopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
+  #roadPopup{min-width:212px;}
+  #roadStack{display:flex;flex-direction:column;gap:3px;max-height:190px;overflow-y:auto;margin:2px 0;}
+  #roadStack .frow{display:flex;gap:3px;align-items:center;}
+  #roadStack select{height:24px;background:#0f1a2b;color:var(--text);border:1px solid var(--line);border-radius:4px;font-size:11px;flex:1;min-width:78px;}
+  #roadStack .wv{font-size:11px;color:var(--muted);min-width:40px;text-align:center;}
+  #roadStack .mini{height:22px;width:24px;padding:0;font-size:13px;font-weight:700;}
   #aislePopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:4px;padding:7px 9px;
     background:rgba(15,23,42,.97);border:1px solid #38bdf8;border-radius:8px;
     box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
@@ -484,12 +490,17 @@
 
     <!-- road editor (select mode — click or drag a road to set width / delete) -->
     <div id="roadPopup">
-      <div class="cap">場外道路寬度</div>
+      <div class="cap">街道斷面 Street Section</div>
+      <div class="row" id="roadPresets" style="flex-wrap:wrap;justify-content:center;">
+        <button data-preset="local" title="窄巷：人行道＋雙向各一線">巷道</button>
+        <button data-preset="avenue" title="大道：兩側路邊停車＋雙向各一線">大道</button>
+        <button data-preset="boulevard" title="林蔭大道：中央分隔島＋雙向各二線">林蔭</button>
+        <button data-preset="oneway" title="單行道">單行</button>
+      </div>
+      <div id="roadStack"></div>
       <div class="row">
-        <button data-rw="narrow" title="窄路 ≈5.5m">窄</button>
-        <button data-rw="std" title="標準雙向 ≈7.3m">標準</button>
-        <button data-rw="wide" title="寬路 ≈11m">寬</button>
-        <button class="del" id="roadDel" title="刪除這條路">✕</button>
+        <button id="roadAddFeat" title="在最內側加一層">＋ 層</button>
+        <button class="del" id="roadDel" title="刪除這條街道">✕ 刪</button>
       </div>
     </div>
 

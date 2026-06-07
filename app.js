@@ -585,7 +585,7 @@ function bufferPolyline(pts, width) {
 }
 // ---- road editing: roads are stored as editable centre-lines (S.roadLines); the solver gets strips (S.roads) ----
 function rebuildRoadStrips() {   // re-derive solver strips from the centre-lines — call after any road edit
-  S.roads = (S.roadLines || []).flatMap(rl => bufferPolyline(rl.line, rl.width || 24));
+  S.roads = (S.roadLines || []).flatMap(rl => bufferPolyline(rl.line, profileWidth(rl)));
 }
 function roadVertexAt(w) {       // pick a road centre-line vertex near w (screen-space). Returns {ri,pi} or null
   const m = toScreen(w);
@@ -864,12 +864,53 @@ function roadChanged() {          // re-derive strips, re-pack around the roads,
   if (!reSolve) commit();
   draw();
 }
-const ROAD_W = { narrow: 18, std: 24, wide: 36 };   // ft — road-width presets
+const ROAD_W = { narrow: 18, std: 24, wide: 36 };   // ft — legacy flat-width presets (kept for old roads)
+// ---- COMPOSABLE STREET SECTION: a street = a stack of lane FEATURES; each renders as a band offset from the
+// centre-line (人行道 / 緩衝 / 路邊停車 / 行車 / 公車 / 中央島). Widths in feet. (the TestFit-style street designer) ----
+const FEAT = {
+  sidewalk: { label: '人行道', fill: '#79828f' },
+  buffer:   { label: '緩衝綠帶', fill: '#5e8a52' },
+  bike:     { label: '自行車道', fill: '#7a4d4d' },
+  parking:  { label: '路邊停車', fill: '#474f60' },
+  drive:    { label: '行車道', fill: '#3a4150' },
+  bus:      { label: '公車道', fill: '#4b4566' },
+  median:   { label: '中央分隔島', fill: '#4a7a45' },
+};
+const FEAT_ORDER = ['sidewalk', 'buffer', 'bike', 'parking', 'drive', 'bus', 'median'];
+function feat(type, width, dir) { return { type, width, dir: dir || 1 }; }
+const STREET_PRESETS = {
+  local:     { label: '巷道', make: () => [feat('sidewalk', 5), feat('buffer', 3), feat('drive', 11, 1), feat('drive', 11, -1), feat('buffer', 3), feat('sidewalk', 5)] },
+  avenue:    { label: '大道·路邊停車', make: () => [feat('sidewalk', 6), feat('parking', 18), feat('drive', 11, 1), feat('drive', 11, -1), feat('parking', 18), feat('sidewalk', 6)] },
+  boulevard: { label: '林蔭大道', make: () => [feat('sidewalk', 6), feat('buffer', 4), feat('drive', 11, 1), feat('drive', 11, 1), feat('median', 10), feat('drive', 11, -1), feat('drive', 11, -1), feat('buffer', 4), feat('sidewalk', 6)] },
+  oneway:    { label: '單行道', make: () => [feat('sidewalk', 5), feat('buffer', 3), feat('drive', 12, 1), feat('buffer', 3), feat('sidewalk', 5)] },
+};
+function profileWidth(rd) { return rd.profile && rd.profile.length ? rd.profile.reduce((s, f) => s + (+f.width || 0), 0) : (rd.width || 24); }
 function roadPopupAnchor(rl) { const ln = rl.line, mid = ln[Math.floor(ln.length / 2)] || ln[0]; return toScreen(mid); }
 function showRoadPopup(ri) {
   const rl = S.roadLines[ri]; const el = $('#roadPopup'); if (!rl || !el) return;
+  if (!rl.profile || !rl.profile.length) rl.profile = STREET_PRESETS.local.make();   // upgrade a legacy width-only road in place
   const a = roadPopupAnchor(rl); el.style.left = a.x + 'px'; el.style.top = (a.y - 14) + 'px'; el.classList.add('show');
-  el.querySelectorAll('[data-rw]').forEach(b => b.classList.toggle('active', Math.abs((rl.width || 24) - ROAD_W[b.dataset.rw]) < 0.6));
+  const stack = $('#roadStack');
+  if (stack) {
+    stack.innerHTML = '';
+    const mini = (txt, fn, cls) => { const b = document.createElement('button'); b.className = 'mini' + (cls ? ' ' + cls : ''); b.textContent = txt; b.onclick = fn; return b; };
+    rl.profile.forEach((f, fi) => {
+      const row = document.createElement('div'); row.className = 'frow';
+      const sel = document.createElement('select');
+      FEAT_ORDER.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = FEAT[t].label; if (t === f.type) o.selected = true; sel.appendChild(o); });
+      sel.onchange = () => { f.type = sel.value; applyRoad(ri); };
+      const wv = document.createElement('span'); wv.className = 'wv'; wv.textContent = U.L(f.width).toFixed(1) + U.lu();
+      row.append(sel, mini('−', () => { f.width = Math.max(2, Math.round(f.width - 1)); applyRoad(ri); }), wv,
+        mini('＋', () => { f.width = Math.round(f.width + 1); applyRoad(ri); }), mini('✕', () => { rl.profile.splice(fi, 1); applyRoad(ri); }, 'del'));
+      stack.appendChild(row);
+    });
+  }
+}
+function applyRoad(ri) {   // after any street-section edit: recompute total width, re-pack around it, re-render popup
+  const rl = S.roadLines[ri]; if (!rl) return;
+  if (!rl.profile.length) rl.profile = STREET_PRESETS.local.make();
+  rl.width = profileWidth(rl);
+  roadChanged(); showRoadPopup(ri);
 }
 function hideRoadPopup() { const el = $('#roadPopup'); if (el) el.classList.remove('show'); }
 function showAislePopup(i) {
@@ -893,17 +934,68 @@ function drawUnitPlan() {
   }
 }
 
+function offsetLine(line, d) {   // offset a polyline by signed perpendicular distance d (miter at bends)
+  const n = line.length; if (n < 2) return line.slice();
+  const nrm = (a, b) => { const L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { x: -(b.y - a.y) / L, y: (b.x - a.x) / L }; };
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const s1 = i > 0 ? nrm(line[i - 1], line[i]) : null, s2 = i < n - 1 ? nrm(line[i], line[i + 1]) : null;
+    const a = s1 || s2, b = s2 || s1;
+    let bx = a.x + b.x, by = a.y + b.y; const bl = Math.hypot(bx, by) || 1; bx /= bl; by /= bl;
+    const miter = Math.min(2.5, 1 / Math.max(0.35, bx * a.x + by * a.y));
+    out.push({ x: line[i].x + bx * d * miter, y: line[i].y + by * d * miter });
+  }
+  return out;
+}
+function bandPoly(line, a, b) { return offsetLine(line, a).concat(offsetLine(line, b).reverse()); }   // strip between two parallel offsets
+function walkLine(line, step, cb) {   // call cb(point, unitDir) every `step` ft along the polyline
+  for (let i = 0; i + 1 < line.length; i++) {
+    const a = line[i], b = line[i + 1], L = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+    for (let t = step / 2; t < L; t += step) cb({ x: a.x + ux * t, y: a.y + uy * t }, { x: ux, y: uy });
+  }
+}
+// render ONE street's composable cross-section: stack each feature as a band offset from the centre-line
+function drawRoadProfile(rd, sc) {
+  const prof = rd.profile; if (!prof || !prof.length) return false;
+  const W = profileWidth(rd);
+  pathPoly(bandPoly(rd.line, -W / 2 - 1, W / 2 + 1), true); ctx.fillStyle = '#222a38'; ctx.fill();   // curb base under everything
+  let off = -W / 2, prev = null;
+  for (const f of prof) {
+    const w = +f.width || 0;
+    pathPoly(bandPoly(rd.line, off, off + w), true); ctx.fillStyle = (FEAT[f.type] || FEAT.drive).fill; ctx.fill();
+    if (f.type === 'drive' || f.type === 'bus') {                                   // direction arrows
+      const lane = offsetLine(rd.line, off + w / 2);
+      ctx.strokeStyle = 'rgba(226,232,240,.5)'; ctx.lineWidth = 2;
+      walkLine(lane, 90, (p, u) => arrow(toScreen(p), Math.atan2(u.y * (f.dir || 1), u.x * (f.dir || 1)), 7));
+    } else if (f.type === 'parking') {                                              // perpendicular stall stripes + inner curb
+      ctx.save(); ctx.strokeStyle = 'rgba(226,232,240,.45)'; ctx.lineWidth = 1;
+      walkLine(rd.line, S.params.stallW || 9, (p, u) => { const px = -u.y, py = u.x; const i1 = toScreen({ x: p.x + px * off, y: p.y + py * off }), i2 = toScreen({ x: p.x + px * (off + w), y: p.y + py * (off + w) }); ctx.beginPath(); ctx.moveTo(i1.x, i1.y); ctx.lineTo(i2.x, i2.y); ctx.stroke(); });
+      ctx.restore();
+    }
+    if (prev && prev.type === 'drive' && f.type === 'drive') {                      // lane divider at the boundary: yellow if opposite dirs (centre), white if same (lane line)
+      ctx.save(); ctx.setLineDash([13, 10]); ctx.lineWidth = 2;
+      ctx.strokeStyle = (prev.dir !== f.dir) ? 'rgba(250,204,21,.85)' : 'rgba(226,232,240,.5)';
+      const dl = offsetLine(rd.line, off); ctx.beginPath(); dl.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke(); ctx.restore();
+    }
+    prev = f; off += w;
+  }
+  return true;
+}
 function drawRoads() {
   const lines = S.roadLines || [];
   const trace = line => { ctx.beginPath(); line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); };
   if (!lines.length) { for (const r of (S.roads || [])) { pathPoly(r, true); ctx.fillStyle = 'rgba(71,85,105,.9)'; ctx.fill(); } return; }  // legacy saves: flat strips
   const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), sc = Math.hypot(b.x - a.x, b.y - a.y);   // px per foot (map-safe)
-  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  for (const rd of lines) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = w + 5; ctx.strokeStyle = 'rgba(30,41,59,.95)'; ctx.stroke(); }   // curb
-  for (const rd of lines) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = Math.max(w, 2); ctx.strokeStyle = 'rgba(74,85,104,.96)'; ctx.stroke(); }  // asphalt
-  ctx.setLineDash([14, 11]);
-  for (const rd of lines) { trace(rd.line); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(250,204,21,.92)'; ctx.stroke(); }   // centre stripe
-  ctx.restore();
+  for (const rd of lines) if (rd.profile && rd.profile.length) drawRoadProfile(rd, sc);   // composable street sections
+  const flat = lines.filter(rd => !rd.profile || !rd.profile.length);                     // legacy / no-profile roads → smooth flat asphalt
+  if (flat.length) {
+    ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (const rd of flat) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = w + 5; ctx.strokeStyle = 'rgba(30,41,59,.95)'; ctx.stroke(); }   // curb
+    for (const rd of flat) { const w = (rd.width || 24) * sc; trace(rd.line); ctx.lineWidth = Math.max(w, 2); ctx.strokeStyle = 'rgba(74,85,104,.96)'; ctx.stroke(); }  // asphalt
+    ctx.setLineDash([14, 11]);
+    for (const rd of flat) { trace(rd.line); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(250,204,21,.92)'; ctx.stroke(); }   // centre stripe
+    ctx.restore();
+  }
   // editable handles in select mode — a node on every centre-line vertex (drag ends to extend/shorten, mids to reshape)
   if (S.tool === 'select' && !S.is3d) {
     for (let ri = 0; ri < lines.length; ri++) {
@@ -2003,9 +2095,10 @@ function finishDraft() {
     if (S.boundary.length >= 3 && !PS.polyOverlap(poly, S.boundary)) msg = '⚠️ 障礙畫在基地範圍外，對排版無影響';
   }
   else if (S.draftKind === 'road') {
-    const wdt = S.roadWidth || 24;
+    const profile = STREET_PRESETS.local.make();                // new street → default 巷道 cross-section (composable; edit in the popup)
+    const wdt = profile.reduce((s, f) => s + f.width, 0);
     S.roads.push(...bufferPolyline(poly, wdt));                  // strips for the solver (block buildings / clear stalls)
-    S.roadLines.push({ line: poly, width: wdt });               // centre-line for a smooth continuous render
+    S.roadLines.push({ line: poly, width: wdt, profile });      // centre-line + composable section
     msg = '已新增社區道路，格局自動繞開';
   }
   else if (S.draftKind === 'parkzone') {
@@ -3160,13 +3253,17 @@ $('#edgeSbReset').onclick = () => {
 };
 $('#edgeSbInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.stopPropagation(); $('#edgeSbApply').click(); } });
 
-// road editor popup — width presets + delete (acts on the selected road S.selRoad)
-$('#roadPopup').querySelectorAll('[data-rw]').forEach(b => b.onclick = () => {
+// street-section editor popup — preset sections + per-layer edit + add layer + delete (acts on S.selRoad)
+$('#roadPresets').querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
   if (S.selRoad == null || !S.roadLines[S.selRoad]) return;
-  S.roadLines[S.selRoad].width = ROAD_W[b.dataset.rw];
-  roadChanged(); showRoadPopup(S.selRoad);
-  toast('已調整道路寬度');
+  S.roadLines[S.selRoad].profile = STREET_PRESETS[b.dataset.preset].make();
+  applyRoad(S.selRoad); toast('已套用斷面：' + STREET_PRESETS[b.dataset.preset].label);
 });
+$('#roadAddFeat').onclick = () => {
+  if (S.selRoad == null || !S.roadLines[S.selRoad]) return;
+  const rl = S.roadLines[S.selRoad]; rl.profile = rl.profile || STREET_PRESETS.local.make(); rl.profile.push(feat('drive', 11, 1));
+  applyRoad(S.selRoad); toast('已加一層（行車道，可改類型）');
+};
 $('#roadDel').onclick = () => {
   if (S.selRoad == null || !S.roadLines[S.selRoad]) return;
   S.roadLines.splice(S.selRoad, 1); S.selRoad = null; hideRoadPopup(); roadChanged();
