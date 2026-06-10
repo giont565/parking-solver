@@ -549,6 +549,7 @@ function draw() {
 
   // draft in progress
   if (S.draft && S.draft.length) drawDraft();
+  if (S.offsetPreview) drawOffsetPreview();
 
   // selected stall highlight
   if (S.selStall) {
@@ -919,6 +920,64 @@ function showAislePopup(i) {
   const a = toScreen(PS.centroid(park.aisles[i].poly)); el.style.left = a.x + 'px'; el.style.top = (a.y - 12) + 'px'; el.classList.add('show');
 }
 function hideAislePopup() { const el = $('#aislePopup'); if (el) el.classList.remove('show'); }
+
+/* ---- PATH OFFSET (TestFit 5.22-style "consistent space creation"): draw a path, offset it by a
+   constant width into a closed band polygon, then commit the band as a parkzone / building /
+   obstacle. Width/side/type are picked in #offsetPopup with a live preview. ---- */
+function offsetBand(path, w, side) {        // closed constant-width band along the path (reuses the street-section offsetLine/bandPoly engine)
+  if (!path || path.length < 2 || !(w > 0)) return [];
+  return side === 'center' ? bandPoly(path, w / 2, -w / 2) : side === 'left' ? bandPoly(path, w, 0) : bandPoly(path, 0, -w);
+}
+function openOffsetPopup(path) {
+  S.offsetSrc = path;
+  S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parkzone' };   // canonical feet
+  const el = $('#offsetPopup'); if (!el) return;
+  const mid = toScreen(path[Math.floor(path.length / 2)]);
+  el.style.left = mid.x + 'px'; el.style.top = (mid.y - 14) + 'px'; el.classList.add('show');
+  $('#offW').value = round2(U.L(S.offsetCfg.w)); $('#offWu').textContent = U.lu();
+  syncOffsetButtons(); applyOffsetPreview();
+}
+function applyOffsetPreview() {
+  if (!S.offsetSrc) return;
+  S.offsetPreview = offsetBand(S.offsetSrc, S.offsetCfg.w, S.offsetCfg.side);
+  draw();
+}
+function hideOffsetPopup() {
+  const el = $('#offsetPopup'); if (el) el.classList.remove('show');
+  S.offsetSrc = null; S.offsetPreview = null;
+}
+function offsetGenerate() {
+  if (!S.offsetPreview || S.offsetPreview.length < 3) { hideOffsetPopup(); draw(); return; }
+  const band = S.offsetPreview.map(p => ({ x: p.x, y: p.y })), kind = S.offsetCfg.kind;
+  if (kind === 'building') { const nb = makeBuilding(band); S.buildings.push(nb); S.selBuilding = nb; }
+  else if (kind === 'obstacle') S.obstacles.push(band);
+  else S.parkZones.push(band);
+  hideOffsetPopup();
+  toast('已沿路徑生成等寬' + ({ parkzone: '停車區', building: '建築', obstacle: '障礙' })[kind]);
+  setTool('select'); resolveActive(); commit();
+}
+function syncOffsetButtons() {
+  document.querySelectorAll('#offSide button').forEach(b => b.classList.toggle('active', b.dataset.side === S.offsetCfg.side));
+  document.querySelectorAll('#offKind button').forEach(b => b.classList.toggle('active', b.dataset.kind === S.offsetCfg.kind));
+}
+function drawOffsetPreview() {
+  const b = S.offsetPreview; if (!b || b.length < 3) return;
+  ctx.save();
+  pathPoly(b, true); ctx.fillStyle = 'rgba(56,189,248,.22)'; ctx.fill();
+  ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#38bdf8'; pathPoly(b, true); ctx.stroke(); ctx.setLineDash([]);
+  if (S.offsetSrc) {
+    ctx.lineWidth = 1.4; ctx.strokeStyle = '#facc15'; ctx.beginPath();
+    S.offsetSrc.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parkzone' };
+$('#offW') && ($('#offW').oninput = () => { const v = +$('#offW').value; if (v > 0) { S.offsetCfg.w = U.Lr(v); applyOffsetPreview(); } });
+document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { S.offsetCfg.side = b.dataset.side; syncOffsetButtons(); applyOffsetPreview(); });
+document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { S.offsetCfg.kind = b.dataset.kind; syncOffsetButtons(); });
+$('#offGo') && ($('#offGo').onclick = offsetGenerate);
+$('#offCancel') && ($('#offCancel').onclick = () => { hideOffsetPopup(); draw(); });
 // draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,
 // asphalt body, dashed yellow centre stripe). Round joins make bends real instead of blocky box segments.
 // UNIT FIT floor plan: colour-coded apartment-unit rectangles tiled into the residential plate
@@ -1198,13 +1257,14 @@ function drawDraft() {
     const p = toScreen(v);
     ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
   }
-  if (S.draftKind === 'road' && S.draft.length >= 2) {                  // hint: how to finish an open road
+  if ((S.draftKind === 'road' || S.draftKind === 'offsetpath') && S.draft.length >= 2) {   // hint: how to finish an open polyline
     const last = toScreen(S.draft[S.draft.length - 1]);
-    ctx.fillStyle = 'rgba(250,204,21,.95)'; ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-    ctx.fillText('雙擊或 Enter 完成道路', last.x + 10, last.y - 6);
+    ctx.fillStyle = S.draftKind === 'road' ? 'rgba(250,204,21,.95)' : 'rgba(56,189,248,.95)';
+    ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText(S.draftKind === 'road' ? '雙擊或 Enter 完成道路' : '雙擊或 Enter 完成路徑 → 設定偏移', last.x + 10, last.y - 6);
   }
   // highlight close target
-  if (S.draftKind !== 'road' && S.draft.length >= 3 && S.hoverWorld) {
+  if (S.draftKind !== 'road' && S.draftKind !== 'offsetpath' && S.draft.length >= 3 && S.hoverWorld) {
     const first = toScreen(S.draft[0]);
     const hv = toScreen(S.hoverWorld);
     if (Math.hypot(first.x - hv.x, first.y - hv.y) < 12) {
@@ -1676,7 +1736,25 @@ function draw3D() {
       pushBox(faces, dc.hall, S.site.height, '#334155', `機房 ${S.site.floors}F`, true, null, 0);
     } else if (S.site.footprint && S.site.footprint.length >= 3) {
       const podium = S.site.structured ? S.site.garage.levelsAbove * (S.site.garage.floorHeight || 11) : 0;
-      pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, S.site.footVoids, podium, S.site.structured ? 0.4 : null);
+      // 3D UNIT-FIT: when a real per-unit floor plan exists (and the unitfit layer is on),
+      // extrude every unit per floor (colour-coded by type) instead of one opaque block —
+      // the TestFit-style 3D unit massing. Falls back to the single block on huge counts.
+      const up = S.site.unitPlan, fh = S.site.height / Math.max(S.site.floors, 1);
+      const resiFloors = S.site.mixedUse ? S.site.floors - 1 : S.site.floors;
+      const fit3dOk = up && up.plan && up.plan.length && S.layers.unitfit && S.layers.unitfit.vis
+        && !S.site.structured && up.plan.length * resiFloors <= 1400;
+      if (fit3dOk) {
+        if (S.site.mixedUse) pushBox(faces, S.site.footprint, fh, '#4f46e5', '底層零售', false, S.site.footVoids, 0);
+        const z00 = (S.site.mixedUse ? fh : 0);
+        for (let k = 0; k < resiFloors; k++) {
+          const z0 = z00 + k * fh;
+          faces.push({ pts: S.site.footprint.map(p => ({ x: p.x, y: p.y, z: z0 })), fill: 'rgba(148,163,184,.10)',
+            stroke: 'rgba(148,163,184,.3)', depth: baseDepthArr(S.site.footprint) - 0.6, z: z0 - 0.05 });   // floor plate
+          for (const u of up.plan) pushBox(faces, u.poly, fh, UNIT_FIT_COLORS[u.type] || '#93c5fd', null, k === resiFloors - 1, null, z0);
+        }
+      } else {
+        pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, S.site.footVoids, podium, S.site.structured ? 0.4 : null);
+      }
     }
   }
 
@@ -1800,10 +1878,10 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) return;  // right handled on contextmenu
 
-  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'aisle' || S.tool === 'parkzone') {
+  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'aisle' || S.tool === 'parkzone' || S.tool === 'offsetpath') {
     if (!S.draft) { S.draft = []; S.draftKind = S.tool; }
-    // closed shapes snap to the first point to close; a road / aisle is an open polyline (double-click / Enter to finish)
-    if (S.tool !== 'road' && S.tool !== 'aisle' && S.draft.length >= 3) {
+    // closed shapes snap to the first point to close; a road / aisle / offset path is an open polyline (double-click / Enter to finish)
+    if (S.tool !== 'road' && S.tool !== 'aisle' && S.tool !== 'offsetpath' && S.draft.length >= 3) {
       const f = toScreen(S.draft[0]), sp = toScreen(w);
       if (Math.hypot(f.x - sp.x, f.y - sp.y) < 12) { finishDraft(); return; }
     }
@@ -1922,7 +2000,7 @@ cv.addEventListener('pointerdown', e => {
 
 cv.addEventListener('pointermove', e => {
   const w = evtWorld(e);
-  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'parkzone', 'subdivide', 'measure'].includes(S.tool) ? snap(w) : null;
+  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'parkzone', 'subdivide', 'measure', 'offsetpath'].includes(S.tool) ? snap(w) : null;
   if ((S.tool === 'subdivide' && S.splitPt) || (S.tool === 'measure' && S.measureStart)) draw();
   $('#stCoord').textContent = `${w.x.toFixed(1)} , ${w.y.toFixed(1)} ft`;
 
@@ -2082,7 +2160,7 @@ cv.addEventListener('contextmenu', e => {
 
 // click selected stall again cycles type (handled via dblclick for clarity)
 cv.addEventListener('dblclick', e => {
-  if ((S.draftKind === 'road' || S.draftKind === 'aisle') && S.draft && S.draft.length >= 2) { finishDraft(); return; }   // double-click ends an open road / aisle
+  if ((S.draftKind === 'road' || S.draftKind === 'aisle' || S.draftKind === 'offsetpath') && S.draft && S.draft.length >= 2) { finishDraft(); return; }   // double-click ends an open road / aisle / offset path
   if (S.tool !== 'select') return;
   const w = evtWorld(e);
   const eh = pickable('entrance') ? entranceAt(w) : null;
@@ -2162,11 +2240,12 @@ function polySelfIntersects(poly) {
   return false;
 }
 function finishDraft() {
-  const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle') ? 2 : 3;
+  const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle' || S.draftKind === 'offsetpath') ? 2 : 3;
   if (!S.draft || S.draft.length < minPts) { S.draft = null; S.draftKind = null; draw(); return; }
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
+  if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; openOffsetPopup(poly); return; }   // path drawn → configure width/side/target in the popup
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
     msg = polySelfIntersects(poly) ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成，按「自動排車位」'; }
   else if (S.draftKind === 'building') {
@@ -2212,7 +2291,7 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
   if (e.code === 'Space') { S.spaceDown = true; cv.style.cursor = 'grab'; }
   if (e.key === 'Enter') { if (S.draft) finishDraft(); else S.mode === 'site' ? doSolveSite() : doSolve(); }
-  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; draw(); }
+  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; hideOffsetPopup(); draw(); }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (S.selEntrance) {
       S.entrances.splice(S.entrances.indexOf(S.selEntrance), 1); S.selEntrance = null; draw(); resolveActive();
@@ -2227,7 +2306,7 @@ window.addEventListener('keydown', e => {
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', f:'offsetpath', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -2236,10 +2315,10 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', aisle:'畫場內道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', aisle:'畫場內道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', offsetpath:'路徑偏移', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
-  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone') { S.draft = null; }
+  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone' && t !== 'offsetpath') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
   if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; }
@@ -2801,6 +2880,7 @@ $('#btnClear').onclick = () => {
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
+  hideOffsetPopup();
   S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -3486,6 +3566,8 @@ function renderGenGrid() {
   const onlyPass = $('#genPass') && $('#genPass').checked;
   _genSorted = _genRaw.filter(o => !onlyPass || o.pass !== false).slice()
     .sort((x, y) => (y[key] || 0) - (x[key] || 0)).slice(0, 9);
+  // lazy thumbnails: only the 9 cards on screen ever get rendered (the scan itself stays light)
+  _genSorted.forEach(o => { if (!o.thumb && o._sol) o.thumb = o.kind === 'site' ? thumbFor(o._sol.parkSol, o._sol.footprint) : thumbFor(o._sol); });
   $('#genGrid').innerHTML = _genSorted.map((o, i) => `<div class="optcard ${i === 0 ? 'best' : ''}">
       <div class="rank">${i === 0 ? '★ 最佳' : '#' + (i + 1)}${o.pass === false ? ' · ⚠ 停車不足' : ''}</div>
       ${o.thumb ? `<img class="optthumb" src="${o.thumb}" alt="">` : ''}
@@ -3497,67 +3579,87 @@ function renderGenGrid() {
 function generateOptions() {
   readParams();
   if (S.boundary.length < 3) { toast('請先畫出基地邊界'); return; }
-  $('#busy').classList.add('show'); $('#busyTxt').textContent = '產生多個方案中…';
-  setTimeout(() => {
-    const out = [];
-    if (S.mode === 'site') {
-      const pbase = readSiteParams();
-      const resi = ['multifamily', 'singlefamily', 'mixeduse'].includes(pbase.useType);
-      // vary unit-mix bias so units / yield genuinely differ (real KPI tradeoffs)
-      const biases = resi ? [
-        { name: '小坪密集', mix: [['studio', 30, 450], ['1br', 50, 650], ['2br', 15, 950], ['3br', 5, 1200]] },
-        { name: '均衡', mix: null },
-        { name: '大坪', mix: [['studio', 5, 550], ['1br', 25, 750], ['2br', 45, 1050], ['3br', 25, 1350]] },
-      ] : [{ name: '', mix: null }];
-      // sweep PARKING TYPE too (surface vs structured garage) — surfaces a real decision:
-      // "surface can't meet the ratio → a 3-level deck does, at this yield"
-      const parkCfgs = [
-        { name: '地面停車', park: 'surface' },
-        { name: '車庫地上3層', park: 'structured', above: 3, below: 0 },
-        { name: '車庫地上2+地下2', park: 'structured', above: 2, below: 2 },
-      ];
-      for (const b of biases) for (const pc of parkCfgs) for (const a of [90, 60]) {
+  $('#busy').classList.add('show');
+  // Build the full combo space as a JOB QUEUE, then burn through it in ≤40ms time-sliced
+  // chunks so the UI never freezes — TestFit-style wide scheme scan. Thumbnails are NOT
+  // rendered here (lazy, in renderGenGrid, only for the 9 cards on screen).
+  const out = [], jobs = [], seen = new Set();
+  if (S.mode === 'site') {
+    const pbase = readSiteParams();
+    const resi = ['multifamily', 'singlefamily', 'mixeduse'].includes(pbase.useType);
+    // vary unit-mix bias so units / yield genuinely differ (real KPI tradeoffs)
+    const biases = resi ? [
+      { name: '小坪密集', mix: [['studio', 30, 450], ['1br', 50, 650], ['2br', 15, 950], ['3br', 5, 1200]] },
+      { name: '均衡', mix: null },
+      { name: '大坪', mix: [['studio', 5, 550], ['1br', 25, 750], ['2br', 45, 1050], ['3br', 25, 1350]] },
+    ] : [{ name: '', mix: null }];
+    // sweep PARKING TYPE (surface vs structured deck) — surfaces a real decision
+    const parkCfgs = [
+      { name: '地面停車', park: 'surface' },
+      { name: '車庫地上3層', park: 'structured', above: 3, below: 0 },
+      { name: '車庫地上2+地下2', park: 'structured', above: 2, below: 2 },
+    ];
+    // sweep COVERAGE utilisation — wide-and-flat vs slender-and-tall is a genuine massing tradeoff
+    const covs = [[1, ''], [0.85, '瘦高-15%'], [0.7, '瘦高-30%']];
+    for (const b of biases) for (const pc of parkCfgs) for (const a of [90, 60, 45]) for (const cv of covs)
+      jobs.push(() => {
         const um = b.mix ? b.mix.map(m => ({ type: m[0], pct: m[1], size: m[2] })) : pbase.unitMix;
-        const p = { ...pbase, parkAngle: a, unitMix: um, parkingType: pc.park,
+        const p = { ...pbase, parkAngle: a, unitMix: um, parkingType: pc.park, maxCoverage: pbase.maxCoverage * cv[0],
           parkingLevelsAbove: pc.above != null ? pc.above : 0, parkingLevelsBelow: pc.below != null ? pc.below : 0 };
         const sol = PS.solveSite({ boundary: S.boundary, p, entrances: S.entrances, obstacles: S.obstacles, roads: S.roads });
-        if (sol) out.push({
-          kind: 'site', parkAngle: a, unitMix: um, park: pc.park, above: pc.above, below: pc.below,
-          kpi: sol.parkingProvided, thumb: thumbFor(sol.parkSol, sol.footprint),
-          k_park: sol.parkingProvided, k_yield: sol.fin.yieldOnCost, k_units: sol.units,
+        if (!sol) return;
+        const key = [sol.units, sol.parkingProvided, sol.floors, pc.park, Math.round(sol.gfa / 500)].join('_');
+        if (seen.has(key)) return; seen.add(key);
+        out.push({
+          kind: 'site', parkAngle: a, unitMix: um, park: pc.park, above: pc.above, below: pc.below, covPct: p.maxCoverage,
+          _sol: sol, kpi: sol.parkingProvided,
+          k_park: sol.parkingProvided, k_yield: sol.fin.yieldOnCost, k_units: sol.units, k_far: sol.far,
           big: sol.residential ? sol.units + ' 戶' : Math.round(U.A(sol.gfa)).toLocaleString() + ' ' + U.au(),
-          sub: `${pc.name}${b.name ? ' · ' + b.name : ''} · ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired}<br>投報率 ${sol.fin.yieldOnCost.toFixed(1)}%`,
+          sub: `${pc.name}${b.name ? ' · ' + b.name : ''}${cv[1] ? ' · ' + cv[1] : ''} · ${a}°<br>提供 ${sol.parkingProvided}/${sol.parkingRequired} · ${sol.floors}F<br>投報率 ${sol.fin.yieldOnCost.toFixed(1)}%`,
           pass: sol.parkingProvided >= sol.parkingRequired,
         });
-      }
-    } else {
-      const seen = new Set();
-      for (const o of ['auto', '0', '90', 'edge']) for (const a of [90, 60, 45]) {
+      });
+  } else {
+    // orientation sweep: auto + longest-edge + every 15° — far wider than the old 4 presets
+    const orients = ['auto', 'edge'];
+    for (let d = 0; d < 180; d += 15) orients.push(d * Math.PI / 180);
+    for (const o of orients) for (const a of [90, 60, 45])
+      jobs.push(() => {
         const sol = PS.solve({ boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances, params: { ...S.params, orient: o, angle: a }, opts: S.opts });
-        if (!sol) continue;
-        const key = sol.count + '_' + a; if (seen.has(key)) continue; seen.add(key);
+        if (!sol) return;
+        const key = sol.count + '_' + a + '_' + (sol.metrics ? sol.metrics.bestAngleDeg : '');
+        if (seen.has(key)) return; seen.add(key);
+        const oname = o === 'auto' ? '自動最佳' : o === 'edge' ? '沿最長邊' : `朝向 ${Math.round(o * 180 / Math.PI)}°`;
         out.push({
-          kind: 'parking', orient: o, angle: a, kpi: sol.count, k_count: sol.count, big: sol.count + ' 車位', thumb: thumbFor(sol),
-          sub: `${({ auto: '自動最佳', 0: '水平 0°', 90: '垂直 90°', edge: '沿最長邊' })[o]}<br>停車角度 ${a}°<br>配置 ${sol.metrics.bestAngleDeg}°`,
+          kind: 'parking', orient: o, angle: a, _sol: sol, kpi: sol.count, k_count: sol.count, big: sol.count + ' 車位',
+          sub: `${oname}<br>停車角度 ${a}°<br>配置 ${sol.metrics.bestAngleDeg}°`,
         });
-      }
-    }
+      });
+  }
+  let i = 0;
+  const step = () => {
+    const t0 = performance.now();
+    while (i < jobs.length && performance.now() - t0 < 40) jobs[i++]();
+    $('#busyTxt').textContent = `掃描方案組合 ${i}/${jobs.length}…（已找到 ${out.length} 個不重複方案）`;
+    if (i < jobs.length) { setTimeout(step, 0); return; }
     _genRaw = out;
     $('#busy').classList.remove('show');
     if (!_genRaw.length) { toast('無法產生方案'); return; }
     // custom KPI sorting (TestFit-style): pick which KPI ranks the options
     const sorts = S.mode === 'site'
-      ? [['k_park', '提供車位'], ['k_yield', '投報率'], ['k_units', '戶數']]
+      ? [['k_park', '提供車位'], ['k_yield', '投報率'], ['k_units', '戶數'], ['k_far', 'FAR 容積']]
       : [['k_count', '車位數']];
     const sel = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;color:var(--muted);">
         排序依據 KPI：<select id="genSort" style="background:#0f1a2b;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 8px;">
         ${sorts.map(s => `<option value="${s[0]}">${s[1]}</option>`).join('')}</select>
         <label style="margin-left:auto;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="genPass"> 只看停車達標</label></div>`;
-    openModal(`產生方案 — ${_genRaw.length} 個（可自選 KPI 排序）`, sel + '<div class="optgrid" id="genGrid"></div>');
+    openModal(`產生方案 — ${_genRaw.length} 個不重複（掃描 ${jobs.length} 種組合）`, sel + '<div class="optgrid" id="genGrid"></div>');
     renderGenGrid();
     $('#genSort').onchange = renderGenGrid;
     $('#genPass').onchange = renderGenGrid;
-  }, 30);
+  };
+  $('#busyTxt').textContent = `掃描方案組合 0/${jobs.length}…`;
+  setTimeout(step, 30);
 }
 function applyOption(o) {
   if (o.kind === 'parking') {
@@ -3567,6 +3669,7 @@ function applyOption(o) {
     closeModal(); doSolve();
   } else {
     S.siteParkAngle = o.parkAngle;
+    if (o.covPct != null) $('#zCov').value = Math.round(o.covPct * 10) / 10;   // slender variants shrink coverage — write it back so re-solve matches
     if (o.park) {                                     // apply the option's parking type + levels
       $('#sParkType').value = o.park;
       const structured = o.park === 'structured';
@@ -4172,7 +4275,22 @@ async function cloudInit() {
 }
 function updateCloudBtn() { const b = $('#btnCloud'); if (b) b.classList.toggle('on', !!_fbUser); }
 function cloudProject() { const s = serialize(); delete s.solution; delete s.site; if (s.parcelDev) s.parcelDev = s.parcelDev.map(d => d ? { use: d.use, mode: d.mode } : null); return s; }   // inputs only → small doc, re-solve / re-generate on load
-function loadCloudData(d) { deserialize(d); setTimeout(() => { if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); } else if (S.boundary.length >= 3) doSolve(); }, 40); }
+function loadCloudData(d) {
+  deserialize(d);
+  setTimeout(() => {
+    // cloud projects store INPUTS only (parcelDev slimmed to {use, mode}) — when a multi-parcel
+    // master plan comes back, regenerate every sub-parcel from its saved use instead of leaving
+    // the overview empty; otherwise just re-solve the active boundary.
+    const slim = S.parcels && S.parcels.length >= 2 && S.parcelDev &&
+                 S.parcelDev.some(x => x && x.use && !x.site && !x.solution);
+    if (slim) {
+      const uses = {}; S.parcelDev.forEach((x, i) => { if (x && x.use) uses[i] = x.use; });
+      developAllParcels(uses);
+    }
+    else if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); }
+    else if (S.boundary.length >= 3) doSolve();
+  }, 40);
+}
 async function cloudShareLink() {
   const { db } = await cloudInit();
   const ref = await db.collection('shared').add({ data: JSON.stringify(cloudProject()), created: Date.now(), by: _fbUser ? _fbUser.uid : null });

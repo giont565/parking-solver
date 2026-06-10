@@ -135,6 +135,19 @@
   #roadStack select{height:24px;background:#0f1a2b;color:var(--text);border:1px solid var(--line);border-radius:4px;font-size:11px;flex:1;min-width:78px;}
   #roadStack .wv{font-size:11px;color:var(--muted);min-width:40px;text-align:center;}
   #roadStack .mini{height:22px;width:24px;padding:0;font-size:13px;font-weight:700;}
+  #offsetPopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:5px;padding:8px 10px;
+    background:rgba(15,23,42,.97);border:1px solid #38bdf8;border-radius:8px;min-width:196px;
+    box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-115%);}
+  #offsetPopup.show{display:flex;}
+  #offsetPopup .cap{font-size:10px;color:#38bdf8;text-align:center;font-weight:700;}
+  #offsetPopup .row{display:flex;gap:4px;align-items:center;}
+  #offsetPopup button{height:25px;padding:0 9px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:5px;cursor:pointer;font-size:12px;font-weight:700;flex:1;}
+  #offsetPopup button:hover{border-color:#38bdf8;}
+  #offsetPopup button.active{background:var(--accent2);color:#001018;border-color:var(--accent);}
+  #offsetPopup button.del{color:var(--bad);flex:none;width:30px;}
+  #offsetPopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
+  #offsetPopup input{width:62px;height:24px;background:#0f1a2b;color:var(--text);border:1px solid var(--line);border-radius:5px;padding:0 6px;font-size:12px;}
+  #offsetPopup .lab{font-size:11px;color:var(--muted);}
   #aislePopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:4px;padding:7px 9px;
     background:rgba(15,23,42,.97);border:1px solid #38bdf8;border-radius:8px;
     box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
@@ -369,6 +382,8 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h12M11 8l4 4-4 4M21 4v16"/></svg>出入口</button>
     <button class="tool" data-tool="subdivide" title="切割基地成多塊子地 (D)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
+    <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 等距生成固定寬度的空間帶（停車區／建築／障礙）(F)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18c5-5 9-5 16-8"/><path d="M4 11c5-5 9-5 16-8" stroke-dasharray="3 2"/></svg>偏移</button>
     <button class="tool" data-tool="measure" title="量測距離 (M)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
     <button class="tool" data-tool="pan" title="平移畫面 (空白鍵拖曳)">
@@ -526,6 +541,19 @@
         <button id="aisleRemove" class="del" title="移除這條場內道路與車位">移除</button>
       </div>
       <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖兩端可改這條場內道路的方向／長短、雙擊車身加彎折點，車位跟著重貼</div>
+    </div>
+
+    <!-- path-offset tool: after drawing the path, pick width / side / target then generate -->
+    <div id="offsetPopup">
+      <div class="cap">路徑偏移 — 等寬空間帶</div>
+      <div class="row"><span class="lab">寬度</span><input id="offW" type="number" step="0.5" min="1"><span class="lab" id="offWu">ft</span></div>
+      <div class="row" id="offSide">
+        <button data-side="left">A 側</button><button data-side="center">置中</button><button data-side="right">B 側</button>
+      </div>
+      <div class="row" id="offKind">
+        <button data-kind="parkzone">停車區</button><button data-kind="building">建築</button><button data-kind="obstacle">障礙</button>
+      </div>
+      <div class="row"><button id="offGo">✓ 生成</button><button id="offCancel" class="del">✕</button></div>
     </div>
   </div>
 
