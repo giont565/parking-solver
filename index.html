@@ -543,18 +543,17 @@
       <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖兩端可改這條場內道路的方向／長短、雙擊車身加彎折點，車位跟著重貼</div>
     </div>
 
-    <!-- path-offset tool: after drawing the path, pick target then generate -->
+    <!-- offset space editor (TestFit-style): live — switch program, drag width handle on canvas or type here -->
     <div id="offsetPopup">
-      <div class="cap">沿路徑生成</div>
+      <div class="cap">偏移空間 — 拖橘色把手調寬度</div>
       <div class="row" id="offKind">
-        <button data-kind="parking">停車車道</button><button data-kind="building">建築帶</button><button data-kind="obstacle">障礙帶</button>
+        <button data-prog="building">建築帶</button><button data-prog="exclusion">退縮排除帶</button>
       </div>
-      <div class="row" id="offWidthRow"><span class="lab">寬度</span><input id="offW" type="number" step="0.5" min="1"><span class="lab" id="offWu">ft</span></div>
+      <div class="row"><span class="lab">寬度</span><input id="offW" type="number" step="0.5" min="1"><span class="lab" id="offWu">ft</span></div>
       <div class="row" id="offSide">
         <button data-side="left">A 側</button><button data-side="center">置中</button><button data-side="right">B 側</button>
       </div>
-      <div class="lab" id="offParkHint" style="display:none;line-height:1.5;">沿這條線自動鋪<b>雙排停車</b>＋接進動線網，<b>之後可拖兩端／加彎折點調整</b>（同「場內道路」）</div>
-      <div class="row"><button id="offGo">✓ 生成</button><button id="offCancel" class="del">✕</button></div>
+      <div class="row"><button id="offDelete" class="del" style="flex:1">🗑 刪除偏移空間</button></div>
     </div>
   </div>
 

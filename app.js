@@ -32,6 +32,8 @@ const S = {
   siteParkAngle: 90,                         // parking angle used inside site solver
   showTrees: true, _trees: null,             // landscape trees (cached positions)
   parcels: null, activeParcel: 0, parcelDev: null, splitPt: null,  // subdivision: sub-parcels (parcelDev[i] = each parcel's saved development → master plan keeps them all)
+  offsetSpaces: [],        // TestFit-style editable offset spaces {line,width,anchor,program}; each owns a building/obstacle host kept in sync
+  selOffset: null, dragOffset: null,   // selected offset space + active drag {oi, kind:'vtx'|'width'|'body', ...}
   draft: null,             // in-progress polygon points
   draftKind: null,         // 'boundary'|'building'|'obstacle'
   hoverWorld: null,
@@ -549,7 +551,7 @@ function draw() {
 
   // draft in progress
   if (S.draft && S.draft.length) drawDraft();
-  if (S.offsetPreview) drawOffsetPreview();
+  drawOffsetOverlays();
 
   // selected stall highlight
   if (S.selStall) {
@@ -921,81 +923,105 @@ function showAislePopup(i) {
 }
 function hideAislePopup() { const el = $('#aislePopup'); if (el) el.classList.remove('show'); }
 
-/* ---- PATH OFFSET: draw a path, then turn it into one of:
-   • 停車車道 parking — routes the CENTRELINE through addManualAisle → clean double-loaded stalls
-     that stay EDITABLE (drag ends / add bend nodes), the same spine engine as the 場內道路 tool
-     (TestFit's editable drive-aisle behaviour). No frozen parkzone, no weird global re-pack.
-   • 建築帶 / 障礙帶 building/obstacle — offset the path into a constant-width band polygon
-     (TestFit 5.22 "consistent space"); both are vertex-editable after creation. ---- */
-function offsetBand(path, w, side) {        // closed constant-width band along the path (reuses the street-section offsetLine/bandPoly engine)
+/* ====================== PATH OFFSET — editable "offset space" (TestFit 5.22 model) ======================
+   Draw a centre line → it becomes a PERSISTENT, live-editable space: drag the width HANDLE on canvas
+   (or type a value) to set the offset, drag the centre-line nodes to reshape; geometry updates live —
+   "consistent geometry without rebuilding from scratch". Each space is one of:
+     • 建築帶 building   — band participates as a BUILDING (parking wraps it, counts in massing)
+     • 退縮排除帶 exclusion — band participates as an OBSTACLE (parking + massing avoid it)
+   Implementation: the space owns a host (a building object or an obstacle polygon array that lives in
+   S.buildings / S.obstacles by REFERENCE), so all existing solve / render / 3D / export machinery
+   picks the band up for free. We only add the centre-line + width-handle editing overlay. */
+function offsetBand(path, w, side) {        // closed constant-width band along the path (reuses bandPoly/offsetLine)
   if (!path || path.length < 2 || !(w > 0)) return [];
   return side === 'center' ? bandPoly(path, w / 2, -w / 2) : side === 'left' ? bandPoly(path, w, 0) : bandPoly(path, 0, -w);
 }
-function openOffsetPopup(path) {
-  S.offsetSrc = path;
-  const el = $('#offsetPopup'); if (!el) return;
-  const mid = toScreen(path[Math.floor(path.length / 2)]);
-  el.style.left = mid.x + 'px'; el.style.top = (mid.y - 14) + 'px'; el.classList.add('show');
-  $('#offW').value = round2(U.L(S.offsetCfg.w)); $('#offWu').textContent = U.lu();
-  syncOffsetButtons(); applyOffsetPreview();
+function offsetWidthHandlePos(sp) {         // the draggable width handle: out along the offset normal at the line's mid-span
+  const ln = sp.line; if (ln.length < 2) return ln[0];
+  const i = Math.max(0, Math.floor((ln.length - 1) / 2)), a = ln[i], b = ln[i + 1] || ln[i];
+  const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / L, ny = (b.x - a.x) / L;
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const d = sp.anchor === 'center' ? sp.width / 2 : sp.width;     // center anchors handle on one edge for feel
+  const sgn = sp.anchor === 'right' ? -1 : 1;
+  return { x: mx + nx * d * sgn, y: my + ny * d * sgn, nx: nx * sgn, ny: ny * sgn, mx, my };
 }
-function applyOffsetPreview() {
-  if (!S.offsetSrc) return;
-  // parking previews the double-loaded footprint (aisle + a stall row each side); bands preview the offset polygon
-  S.offsetPreview = S.offsetCfg.kind === 'parking'
-    ? offsetBand(S.offsetSrc, (S.params.aisle || 24) + 2 * (S.params.stallD || 18), 'center')
-    : offsetBand(S.offsetSrc, S.offsetCfg.w, S.offsetCfg.side);
-  draw();
+function rebuildOffsetSpace(sp) {           // recompute the band from {line,width,anchor} and sync into the host
+  const band = offsetBand(sp.line, sp.width, sp.anchor);
+  if (sp.program === 'building') { if (sp.host && sp.host.poly !== undefined) sp.host.poly = band; }
+  else if (sp.host && Array.isArray(sp.host)) { sp.host.length = 0; band.forEach(p => sp.host.push(p)); }
 }
-function hideOffsetPopup() {
-  const el = $('#offsetPopup'); if (el) el.classList.remove('show');
-  S.offsetSrc = null; S.offsetPreview = null;
+function createOffsetSpace(line) {          // from a freshly drawn centre line → a selected, editable building band
+  const sp = { line: line.map(p => ({ x: p.x, y: p.y })), width: 24, anchor: 'left', program: 'building', host: null };
+  const host = makeBuilding(offsetBand(sp.line, sp.width, sp.anchor)); host._ofs = true; S.buildings.push(host); sp.host = host;
+  S.offsetSpaces.push(sp); S.selOffset = S.offsetSpaces.length - 1;
+  setTool('select'); showOffsetPopup(); resolveActive(); commit();
+  toast('已建立偏移空間 — 拖橘色把手調寬度、拖白點改線形');
 }
-function offsetGenerate() {
-  const src = S.offsetSrc, kind = S.offsetCfg.kind;
-  if (!src || src.length < 2) { hideOffsetPopup(); draw(); return; }
-  if (kind === 'parking') {
-    const line = src.map(p => ({ x: p.x, y: p.y }));
-    hideOffsetPopup();
-    if (!activePark()) { toast('先按「自動排車位」，再用路徑偏移加停車車道'); setTool('select'); draw(); return; }
-    addManualAisle(line);                     // editable spine: tiles double-loaded stalls, draggable afterwards
-    setTool('select'); return;
-  }
-  const band = (S.offsetPreview || []).map(p => ({ x: p.x, y: p.y }));
-  if (band.length < 3) { hideOffsetPopup(); draw(); return; }
-  if (kind === 'building') { const nb = makeBuilding(band); S.buildings.push(nb); S.selBuilding = nb; }
-  else S.obstacles.push(band);
-  hideOffsetPopup();
-  toast('已沿路徑生成等寬' + (kind === 'building' ? '建築帶（可拖角點調整）' : '障礙帶'));
-  setTool('select'); resolveActive(); commit();
+function setOffsetProgram(sp, program) {
+  if (sp.program === program) return;
+  // tear down the old host, build the new one in the right list
+  if (sp.program === 'building') { const k = S.buildings.indexOf(sp.host); if (k >= 0) S.buildings.splice(k, 1); }
+  else { const k = S.obstacles.indexOf(sp.host); if (k >= 0) S.obstacles.splice(k, 1); }
+  sp.program = program;
+  if (program === 'building') { const b = makeBuilding(offsetBand(sp.line, sp.width, sp.anchor)); b._ofs = true; S.buildings.push(b); sp.host = b; }
+  else { const arr = offsetBand(sp.line, sp.width, sp.anchor); S.obstacles.push(arr); sp.host = arr; }
+  resolveActive(); commit();
 }
-function syncOffsetButtons() {
-  document.querySelectorAll('#offSide button').forEach(b => b.classList.toggle('active', b.dataset.side === S.offsetCfg.side));
-  document.querySelectorAll('#offKind button').forEach(b => b.classList.toggle('active', b.dataset.kind === S.offsetCfg.kind));
-  const park = S.offsetCfg.kind === 'parking';     // parking auto-sizes (stall+aisle) → width/side N/A
-  if ($('#offWidthRow')) $('#offWidthRow').style.display = park ? 'none' : 'flex';
-  if ($('#offSide')) $('#offSide').style.display = park ? 'none' : 'flex';
-  if ($('#offParkHint')) $('#offParkHint').style.display = park ? 'block' : 'none';
+function deleteOffsetSpace(i) {
+  const sp = S.offsetSpaces[i]; if (!sp) return;
+  if (sp.program === 'building') { const k = S.buildings.indexOf(sp.host); if (k >= 0) S.buildings.splice(k, 1); }
+  else { const k = S.obstacles.indexOf(sp.host); if (k >= 0) S.obstacles.splice(k, 1); }
+  S.offsetSpaces.splice(i, 1); S.selOffset = null; hideOffsetPopup(); resolveActive(); commit();
+  toast('已刪除偏移空間');
 }
-function drawOffsetPreview() {
-  const b = S.offsetPreview; if (!b || b.length < 3) return;
-  const park = S.offsetCfg.kind === 'parking';
-  ctx.save();
-  pathPoly(b, true); ctx.fillStyle = park ? 'rgba(56,189,248,.14)' : 'rgba(56,189,248,.22)'; ctx.fill();
-  ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#38bdf8'; pathPoly(b, true); ctx.stroke(); ctx.setLineDash([]);
-  if (S.offsetSrc) {                                 // the drawn centreline (yellow = band, cyan = parking aisle)
-    ctx.lineWidth = park ? 2.4 : 1.4; ctx.strokeStyle = park ? '#38bdf8' : '#facc15'; ctx.lineCap = 'round'; ctx.beginPath();
-    S.offsetSrc.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
-    ctx.stroke();
-  }
-  ctx.restore();
+function offsetVertexAt(w) {                // pick a centre-line node {oi,pi} near w (screen space)
+  const m = toScreen(w);
+  for (let oi = 0; oi < S.offsetSpaces.length; oi++) { const ln = S.offsetSpaces[oi].line;
+    for (let pi = 0; pi < ln.length; pi++) { const s = toScreen(ln[pi]); if (Math.hypot(s.x - m.x, s.y - m.y) < 12) return { oi, pi }; } }
+  return null;
 }
-S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parking' };
-$('#offW') && ($('#offW').oninput = () => { const v = +$('#offW').value; if (v > 0) { S.offsetCfg.w = U.Lr(v); applyOffsetPreview(); } });
-document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { S.offsetCfg.side = b.dataset.side; syncOffsetButtons(); applyOffsetPreview(); });
-document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { S.offsetCfg.kind = b.dataset.kind; syncOffsetButtons(); applyOffsetPreview(); });
-$('#offGo') && ($('#offGo').onclick = offsetGenerate);
-$('#offCancel') && ($('#offCancel').onclick = () => { hideOffsetPopup(); draw(); });
+function offsetWidthHandleAt(w) {           // pick a width handle {oi} near w (only the selected space shows one)
+  if (S.selOffset == null || !S.offsetSpaces[S.selOffset]) return null;
+  const m = toScreen(w), h = toScreen(offsetWidthHandlePos(S.offsetSpaces[S.selOffset]));
+  return Math.hypot(h.x - m.x, h.y - m.y) < 14 ? { oi: S.selOffset } : null;
+}
+function offsetBodyAt(w) {                  // pick a centre-line body (near a segment) {oi} for whole-move
+  const m = toScreen(w);
+  for (let oi = 0; oi < S.offsetSpaces.length; oi++) { const ln = S.offsetSpaces[oi].line;
+    for (let i = 0; i + 1 < ln.length; i++) if (distSegPx(m, toScreen(ln[i]), toScreen(ln[i + 1])) < 7) return { oi }; }
+  return null;
+}
+function showOffsetPopup() {
+  const i = S.selOffset, sp = S.offsetSpaces[i], el = $('#offsetPopup'); if (sp == null || !sp || !el) return;
+  const a = toScreen(sp.line[Math.floor(sp.line.length / 2)] || sp.line[0]);
+  el.style.left = a.x + 'px'; el.style.top = (a.y - 14) + 'px'; el.classList.add('show');
+  $('#offW').value = round2(U.L(sp.width)); $('#offWu').textContent = U.lu();
+  document.querySelectorAll('#offKind button').forEach(b => b.classList.toggle('active', b.dataset.prog === sp.program));
+  document.querySelectorAll('#offSide button').forEach(b => b.classList.toggle('active', b.dataset.side === sp.anchor));
+}
+function hideOffsetPopup() { const el = $('#offsetPopup'); if (el) el.classList.remove('show'); }
+function drawOffsetOverlays() {              // centre-line + node handles + the draggable WIDTH handle (select mode, 2D only)
+  if (S.is3d || S.mapMode || S.tool !== 'select') return;
+  S.offsetSpaces.forEach((sp, oi) => {
+    const sel = oi === S.selOffset;
+    ctx.save();
+    ctx.lineWidth = sel ? 2 : 1.3; ctx.strokeStyle = sel ? '#38bdf8' : 'rgba(56,189,248,.55)'; ctx.lineCap = 'round'; ctx.beginPath();
+    sp.line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke();
+    if (sel) {
+      for (const p of sp.line) { const s = toScreen(p); ctx.beginPath(); ctx.arc(s.x, s.y, 4.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); }
+      const h = offsetWidthHandlePos(sp), hs = toScreen(h), ms = toScreen({ x: h.mx, y: h.my });
+      ctx.setLineDash([4, 3]); ctx.lineWidth = 1; ctx.strokeStyle = '#f59e0b'; ctx.beginPath(); ctx.moveTo(ms.x, ms.y); ctx.lineTo(hs.x, hs.y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(hs.x, hs.y, 6, 0, 7); ctx.fillStyle = '#f59e0b'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#7c2d12'; ctx.stroke();
+      ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(round2(U.L(sp.width)) + U.lu(), hs.x, hs.y - 9);
+    }
+    ctx.restore();
+  });
+}
+$('#offW') && ($('#offW').oninput = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; const v = +$('#offW').value; if (v > 0) { sp.width = U.Lr(v); rebuildOffsetSpace(sp); draw(); } });
+$('#offW') && ($('#offW').onchange = () => { resolveActive(); commit(); });
+document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; sp.anchor = b.dataset.side; rebuildOffsetSpace(sp); showOffsetPopup(); resolveActive(); draw(); commit(); });
+document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; setOffsetProgram(sp, b.dataset.prog); showOffsetPopup(); draw(); });
+$('#offDelete') && ($('#offDelete').onclick = () => { if (S.selOffset != null) deleteOffsetSpace(S.selOffset); draw(); });
 // draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,
 // asphalt body, dashed yellow centre stripe). Round joins make bends real instead of blocky box segments.
 // UNIT FIT floor plan: colour-coded apartment-unit rectangles tiled into the residential plate
@@ -1974,6 +2000,9 @@ cv.addEventListener('pointerdown', e => {
       if (eh) { S.dragEntrance = eh; S.selEntrance = eh; S.selStall = null; draw(); return; }
     }
     S.selEntrance = null;
+    // OFFSET SPACE — width handle (highest priority, only on the selected space), then a centre-line node
+    { const wh = offsetWidthHandleAt(w); if (wh) { S.dragOffset = { oi: wh.oi, kind: 'width' }; draw(); return; } }
+    { const ov = offsetVertexAt(w); if (ov) { S.dragOffset = { oi: ov.oi, kind: 'vtx', pi: ov.pi }; S.selOffset = ov.oi; showOffsetPopup(); draw(); return; } }
     // ROAD EDIT — grab a centre-line vertex (drag the ends to extend/shorten, mid-points to reshape). Small target → before boundary.
     { const rv = roadVertexAt(w); if (rv) { S.dragRoad = rv; S.selRoad = rv.ri; S.selStall = null; showRoadPopup(rv.ri); draw(); return; } }
     // vertex grab on boundary (corners win — few + structural; the boundary now re-flows the parking on release)
@@ -1988,6 +2017,8 @@ cv.addEventListener('pointerdown', e => {
     { const sb = spineBodyAt(w); if (sb >= 0) { S.dragSpineBody = { si: sb, last: w }; S.selAisle = sb; S.selStall = null; S.selRoad = null; showAislePopup(sb); draw(); return; } }
     // BOUNDARY EDGE — drag a whole edge to stretch the site (a click without a drag = the site-mode setback popup)
     { const be = boundaryEdgeAt(w); if (be >= 0) { S.dragBoundaryEdge = { i: be, last: w, moved: false, reflow: (S.mode === 'site' ? !!S.site : !!S.solution) }; return; } }
+    // OFFSET SPACE BODY — grab the centre line to move the whole space (also selects it)
+    { const ob = offsetBodyAt(w); if (ob) { S.dragOffset = { oi: ob.oi, kind: 'body', last: w }; S.selOffset = ob.oi; showOffsetPopup(); draw(); return; } }
     // ROAD EDIT — grab the road body to move the whole road (also selects it for the width / delete popup).
     { const rb = roadBodyAt(w); if (rb) { S.dragRoad = { ri: rb.ri, body: true, last: w }; S.selRoad = rb.ri; S.selStall = null; showRoadPopup(rb.ri); draw(); return; } }
     // MASSING — grab a building footprint corner to reshape it (parking re-packs on release). Small target → before edge/body.
@@ -2040,6 +2071,23 @@ cv.addEventListener('pointermove', e => {
     S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
     draw(); return;
   }
+  if (S.dragOffset) {                                // live-drag an offset space: width handle / centre-line node / whole body
+    const sp = S.offsetSpaces[S.dragOffset.oi];
+    if (sp) {
+      if (S.dragOffset.kind === 'width') {
+        const h = offsetWidthHandlePos(sp);          // project the cursor onto the offset normal → live width
+        let d = (w.x - h.mx) * h.nx + (w.y - h.my) * h.ny;
+        if (sp.anchor === 'center') d *= 2;
+        sp.width = Math.max(2, Math.round(d));
+        $('#offW') && ($('#offW').value = round2(U.L(sp.width)));
+      } else if (S.dragOffset.kind === 'body') {
+        const dx = w.x - S.dragOffset.last.x, dy = w.y - S.dragOffset.last.y;
+        sp.line = sp.line.map(p => ({ x: p.x + dx, y: p.y + dy })); S.dragOffset.last = w;
+      } else { sp.line[S.dragOffset.pi] = snap(w); }
+      rebuildOffsetSpace(sp); showOffsetPopup(); draw();
+    }
+    return;
+  }
   if (S.dragRoad) {                                  // live-drag a road centre-line vertex, or move the whole road
     const rl = S.roadLines[S.dragRoad.ri];
     if (rl) {
@@ -2090,6 +2138,12 @@ cv.addEventListener('pointermove', e => {
 window.addEventListener('pointerup', () => {
   if (S.panning) { S.panning = false; cv.style.cursor = ''; }
   if (S.mapPanning) { S.mapPanning = null; cv.style.cursor = ''; }
+  if (S.dragOffset) {                                // offset-space edit done → re-pack/re-mass around the updated band
+    const sp = S.offsetSpaces[S.dragOffset.oi]; S.dragOffset = null;
+    if (sp) rebuildOffsetSpace(sp);
+    resolveActive(); commit(); showOffsetPopup();
+    return;
+  }
   if (S.dragRoad) {                                  // road edit done → re-derive strips and re-pack around the new road
     const ri = S.dragRoad.ri; S.dragRoad = null; rebuildRoadStrips();
     const reSolve = (S.mode === 'site' ? !!S.site : !!S.solution);
@@ -2263,7 +2317,7 @@ function finishDraft() {
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
-  if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; openOffsetPopup(poly); return; }   // path drawn → configure width/side/target in the popup
+  if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; createOffsetSpace(poly); return; }   // path drawn → live-editable offset space
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
     msg = polySelfIntersects(poly) ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成，按「自動排車位」'; }
   else if (S.draftKind === 'building') {
@@ -2309,9 +2363,11 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
   if (e.code === 'Space') { S.spaceDown = true; cv.style.cursor = 'grab'; }
   if (e.key === 'Enter') { if (S.draft) finishDraft(); else S.mode === 'site' ? doSolveSite() : doSolve(); }
-  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; hideOffsetPopup(); draw(); }
+  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; S.selOffset = null; hideOffsetPopup(); draw(); }
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (S.selEntrance) {
+    if (S.selOffset != null && S.offsetSpaces[S.selOffset]) {
+      deleteOffsetSpace(S.selOffset); draw();
+    } else if (S.selEntrance) {
       S.entrances.splice(S.entrances.indexOf(S.selEntrance), 1); S.selEntrance = null; draw(); resolveActive();
     } else if (S.selRoad != null && S.roadLines[S.selRoad]) {
       S.roadLines.splice(S.selRoad, 1); S.selRoad = null; hideRoadPopup(); roadChanged(); toast('已刪除道路');
@@ -2339,7 +2395,7 @@ function setTool(t) {
   if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone' && t !== 'offsetpath') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
-  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; }
+  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; S.selOffset = null; hideOffsetPopup(); }
   draw();
 }
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
@@ -2552,9 +2608,15 @@ function getSiteForm() {
 function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const el = $('#' + id); if (el) el.value = o[id]; }); }
 
 function serialize() {
+  // offset-space hosts live inside S.buildings / S.obstacles; exclude them here and re-derive on load
+  // (their geometry comes from {line,width,anchor}), so we don't double-store the band.
+  const ofsBuild = new Set(S.offsetSpaces.filter(s => s.program === 'building').map(s => s.host));
+  const ofsObs = new Set(S.offsetSpaces.filter(s => s.program === 'exclusion').map(s => s.host));
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings, obstacles: S.obstacles, roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
+    boundary: S.boundary, buildings: S.buildings.filter(b => !ofsBuild.has(b)), obstacles: S.obstacles.filter(o => !ofsObs.has(o)),
+    roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
+    offsetSpaces: S.offsetSpaces.map(s => ({ line: s.line, width: s.width, anchor: s.anchor, program: s.program })),
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, parcelDev: S.parcelDev, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -2568,6 +2630,15 @@ function deserialize(d) {
   S.parcels = d.parcels || null; S.activeParcel = d.activeParcel || 0; S.parcelDev = d.parcelDev || null;
   S.edgeSetback = d.edgeSetback || {}; S.selEdge = null;
   normalizeBuildings();                              // wrap any legacy raw-array buildings into objects
+  // re-create offset spaces + their building/obstacle hosts, re-linking by fresh reference
+  S.offsetSpaces = []; S.selOffset = null; S.dragOffset = null;
+  (d.offsetSpaces || []).forEach(s => {
+    const sp = { line: (s.line || []).map(p => ({ x: p.x, y: p.y })), width: s.width || 24, anchor: s.anchor || 'left', program: s.program || 'building', host: null };
+    if (sp.line.length < 2) return;
+    if (sp.program === 'building') { const b = makeBuilding(offsetBand(sp.line, sp.width, sp.anchor)); b._ofs = true; S.buildings.push(b); sp.host = b; }
+    else { const arr = offsetBand(sp.line, sp.width, sp.anchor); S.obstacles.push(arr); sp.host = arr; }
+    S.offsetSpaces.push(sp);
+  });
   Object.assign(S.params, d.params || {}); Object.assign(S.opts, d.opts || {});
   S.solution = d.solution || null; S.site = d.site || null; S.selStall = null; S.selBuilding = null;
   syncInputs(); setSiteForm(d.siteForm); updateUxSum();
@@ -2898,7 +2969,7 @@ $('#btnClear').onclick = () => {
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
-  hideOffsetPopup();
+  S.offsetSpaces = []; S.selOffset = null; S.dragOffset = null; hideOffsetPopup();
   S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
   if (S.mapMode) draw(); else fitView();
   commit();
