@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>parcelweave 城織 — 整體都市規劃設計</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230f172a'/><g fill='%232f93d4'><rect x='4' y='4' width='10' height='7' rx='1'/><rect x='4' y='13' width='10' height='7' rx='1'/><rect x='4' y='22' width='10' height='6' rx='1'/><rect x='18' y='4' width='10' height='7' rx='1'/><rect x='18' y='13' width='10' height='7' rx='1'/><rect x='18' y='22' width='10' height='6' rx='1'/></g><line x1='5.5' y1='26.5' x2='22.5' y2='9.5' stroke='%23f59e0b' stroke-width='3.6' stroke-linecap='round'/><circle cx='5.5' cy='26.5' r='2.6' fill='%23f59e0b'/><polygon points='28.5,3.5 26.5,11.4 20.6,5.5' fill='%23f59e0b'/></svg>" />
 <!-- Leaflet (free, no API key) for the real-world map base. Pinned + SRI-verified. -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
@@ -160,9 +161,8 @@
   #aislePopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
 
   /* ---- toolbar ---- */
-  .brand{display:flex;align-items:center;gap:9px;margin-right:6px;font-weight:700;letter-spacing:.2px;white-space:nowrap;}
-  .brand .dot{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,#7dd3fc,var(--accent));box-shadow:0 0 12px var(--accent);}
-  .brand small{color:var(--muted);font-weight:500;font-size:11px;}
+  .brand{display:flex;align-items:center;margin-right:6px;font-weight:700;letter-spacing:.2px;white-space:nowrap;}
+  .brand small{color:var(--muted);font-weight:500;font-size:11px;margin-left:5px;}
   .tbar-sep{width:1px;height:24px;background:linear-gradient(180deg,transparent,var(--line) 22%,var(--line) 78%,transparent);margin:0 5px;flex:none;}
   /* grouped tool palette — related buttons read as one island, not loose tiles */
   .toolgroup{display:inline-flex;align-items:center;gap:2px;padding:3px;flex:none;
@@ -350,7 +350,7 @@
   <!-- ===================== TOOLBAR ===================== -->
   <div id="toolbar">
    <div class="tbrow">
-    <div class="brand"><span class="dot"></span>parcelweave <small>城織</small></div>
+    <div class="brand"><svg class="brandmark" viewBox="0 0 32 32" fill="none" width="22" height="22" style="margin-right:7px;vertical-align:-5px;flex:none;"><rect width="32" height="32" rx="6" fill="#0f172a"/><g fill="#2f93d4"><rect x="4" y="4" width="10" height="7" rx="1"/><rect x="4" y="13" width="10" height="7" rx="1"/><rect x="4" y="22" width="10" height="6" rx="1"/><rect x="18" y="4" width="10" height="7" rx="1"/><rect x="18" y="13" width="10" height="7" rx="1"/><rect x="18" y="22" width="10" height="6" rx="1"/></g><line x1="5.5" y1="26.5" x2="22.5" y2="9.5" stroke="#f59e0b" stroke-width="3.6" stroke-linecap="round"/><circle cx="5.5" cy="26.5" r="2.6" fill="#f59e0b"/><polygon points="28.5,3.5 26.5,11.4 20.6,5.5" fill="#f59e0b"/></svg>parcelweave <small>城織</small></div>
     <div class="seg" id="modeSeg" style="width:158px;height:34px;">
       <button data-mode="parking" class="active">🅿️ 停車場</button>
       <button data-mode="site">🏢 建案</button>
