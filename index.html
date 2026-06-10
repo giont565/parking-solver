@@ -160,6 +160,19 @@
   #aislePopup button.del{color:var(--bad);}
   #aislePopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
 
+  /* SELECTION ZONE — the 5 editors above are moved into the left panel (TestFit-style) instead of
+     floating over the canvas. .selcard overrides their old absolute/transform styles into panel blocks.
+     Higher specificity (#selZone .selcard) beats the per-id rules above, so position/transform reset. */
+  #selZone{display:flex;flex-direction:column;gap:10px;margin-bottom:4px;}
+  #selZone:empty{display:none;}
+  #selZone .selcard{position:static;transform:none;z-index:auto;box-shadow:none;min-width:0;width:100%;
+    display:none;flex-direction:column;gap:6px;padding:11px 12px;background:var(--panel2);
+    border:1px solid var(--accent);border-radius:10px;}
+  #selZone .selcard.show{display:flex;}
+  #selZone .selcard > .row{flex-wrap:wrap;}
+  #selZone .selcard > .row > button{flex:1;min-width:50px;}   /* top-level action buttons stretch; roadStack minis untouched */
+  #selZone #roadStack{max-height:220px;}
+
   /* ---- toolbar ---- */
   .brand{display:flex;align-items:center;margin-right:6px;font-weight:700;letter-spacing:.2px;white-space:nowrap;}
   .brand small{color:var(--muted);font-weight:500;font-size:11px;margin-left:5px;}
@@ -493,8 +506,16 @@
     <div class="scalebar" id="scalebar"><div class="bar" id="scaleBar" style="width:80px;"></div><span id="scaleTxt">— ft</span></div>
     <div id="toast"></div>
 
+  </div>
+
+  <!-- ===================== PANEL ===================== -->
+  <div id="panel">
+
+    <!-- ===== SELECTION PROPERTIES (TestFit-style: selected object's controls live here in the
+         left panel, NOT as floating popups over the canvas; canvas keeps only the drag handles) ===== -->
+    <div id="selZone">
     <!-- entrance type picker (appears when you click an entrance) -->
-    <div id="entPopup">
+    <div id="entPopup" class="selcard">
       <div class="cap">↓ 這個出入口的方向</div>
       <div class="row">
         <button data-t="in" title="只進：車道箭頭朝場內">▸ 只進</button>
@@ -505,7 +526,7 @@
     </div>
 
     <!-- per-edge setback editor (site mode — click a boundary edge) -->
-    <div id="edgePopup">
+    <div id="edgePopup" class="selcard">
       <div class="cap">這條邊退縮（<span id="edgeSbUnit">ft</span>）</div>
       <div class="row">
         <input type="number" id="edgeSbInput" min="0" step="1" placeholder="auto"
@@ -516,7 +537,7 @@
     </div>
 
     <!-- road editor (select mode — click or drag a road to set width / delete) -->
-    <div id="roadPopup">
+    <div id="roadPopup" class="selcard">
       <div class="cap">街道斷面 Street Section</div>
       <div class="row" id="roadPresets" style="flex-wrap:wrap;justify-content:center;">
         <button data-preset="local" title="窄巷：人行道＋雙向各一線">巷道</button>
@@ -532,7 +553,7 @@
     </div>
 
     <!-- drive-aisle editor (select mode — click an auto drive aisle; drag it to slide the parking grid) -->
-    <div id="aislePopup">
+    <div id="aislePopup" class="selcard">
       <div class="cap">這條場內道路</div>
       <div class="row">
         <button id="aisleSingle" title="只停單邊（移除一側的車位）">單邊停</button>
@@ -544,7 +565,7 @@
     </div>
 
     <!-- offset space editor (TestFit-style): live — switch program, drag width handle on canvas or type here -->
-    <div id="offsetPopup">
+    <div id="offsetPopup" class="selcard">
       <div class="cap">偏移空間 — 拖橘色把手調寬度</div>
       <div class="row" id="offKind">
         <button data-prog="building">建築帶</button><button data-prog="exclusion">退縮排除帶</button>
@@ -555,10 +576,7 @@
       </div>
       <div class="row"><button id="offDelete" class="del" style="flex:1">🗑 刪除偏移空間</button></div>
     </div>
-  </div>
-
-  <!-- ===================== PANEL ===================== -->
-  <div id="panel">
+    </div>
     <!-- metrics -->
     <div class="group">
       <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M7 14l3-3 3 3 5-6"/></svg>即時數據</h3>
