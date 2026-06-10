@@ -483,8 +483,10 @@ function draw() {
     });
   }
 
-  // buildings — each with its own colour / opacity, void courtyards punched out
+  // buildings — each with its own colour / opacity, void courtyards punched out.
+  // Offset-space hosts (b._ofs) are skipped here — they render as rounded "spaces" in drawOffsetOverlays.
   for (const b of (S.layers.building.vis ? S.buildings : [])) {
+    if (b._ofs) continue;
     const fp = b.poly, voids = b.voids || [], col = b.color || '#64748b', sel = S.selBuilding === b;
     ctx.beginPath(); subPath(fp); voids.forEach(subPath);              // outer + holes
     ctx.fillStyle = hexA(col, b.opacity != null ? b.opacity : 0.55); ctx.fill('evenodd');
@@ -501,6 +503,7 @@ function draw() {
   // footprint corner handles in select mode — drag a corner to reshape the massing (parking re-packs on release)
   if (S.tool === 'select' && !S.is3d && S.layers.building.vis) {
     for (const b of S.buildings) {
+      if (b._ofs) continue;
       const sel = S.selBuilding === b;
       for (const p of b.poly) {
         const s = toScreen(p);
@@ -519,8 +522,10 @@ function draw() {
   // internal roads (user-drawn) — drawn as a STROKED centre-line with round joins/caps so bends are smooth
   // and continuous (curb edge under + asphalt + dashed centre stripe). Looks like a real road, not box segments.
   drawRoads();
-  // obstacles
+  // obstacles (offset-space exclusion hosts are skipped — they render as rounded "spaces" below)
+  const _ofsObs = new Set(S.offsetSpaces.filter(s => s.program === 'exclusion').map(s => s.host));
   for (const o of (S.layers.obstacle.vis ? S.obstacles : [])) {
+    if (_ofsObs.has(o)) continue;
     pathPoly(o, true);
     ctx.fillStyle = 'rgba(127,29,29,.4)'; ctx.fill();
     ctx.lineWidth = 1.5; ctx.strokeStyle = '#ef4444'; ctx.stroke();
@@ -528,6 +533,7 @@ function draw() {
   }
   if (S.tool === 'select' && !S.is3d && S.layers.obstacle.vis) {   // obstacle corner handles (drag corner / edge / whole to adjust)
     for (let oi = 0; oi < (S.obstacles || []).length; oi++) {
+      if (_ofsObs.has(S.obstacles[oi])) continue;
       const sel = S.selObstacle === oi;
       if (sel) { pathPoly(S.obstacles[oi], true); ctx.lineWidth = 2; ctx.strokeStyle = '#f87171'; ctx.stroke(); }
       for (const p of S.obstacles[oi]) { const s = toScreen(p); ctx.beginPath(); ctx.arc(s.x, s.y, sel ? 5.5 : 4, 0, 6.2832); ctx.fillStyle = '#ef4444'; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = '#0f172a'; ctx.stroke(); }
@@ -951,7 +957,7 @@ function rebuildOffsetSpace(sp) {           // recompute the band from {line,wid
   else if (sp.host && Array.isArray(sp.host)) { sp.host.length = 0; band.forEach(p => sp.host.push(p)); }
 }
 function createOffsetSpace(line) {          // from a freshly drawn centre line → a selected, editable building band
-  const sp = { line: line.map(p => ({ x: p.x, y: p.y })), width: 24, anchor: 'left', program: 'building', host: null };
+  const sp = { line: line.map(p => ({ x: p.x, y: p.y })), width: 24, anchor: 'center', program: 'building', host: null };
   const host = makeBuilding(offsetBand(sp.line, sp.width, sp.anchor)); host._ofs = true; S.buildings.push(host); sp.host = host;
   S.offsetSpaces.push(sp); S.selOffset = S.offsetSpaces.length - 1;
   setTool('select'); showOffsetPopup(); resolveActive(); commit();
@@ -1000,23 +1006,43 @@ function showOffsetPopup() {
   document.querySelectorAll('#offSide button').forEach(b => b.classList.toggle('active', b.dataset.side === sp.anchor));
 }
 function hideOffsetPopup() { const el = $('#offsetPopup'); if (el) el.classList.remove('show'); }
-function drawOffsetOverlays() {              // centre-line + node handles + the draggable WIDTH handle (select mode, 2D only)
-  if (S.is3d || S.mapMode || S.tool !== 'select') return;
+// Render each offset space as a SOLID, semi-transparent, ROUND-capped band along its centre line
+// (the TestFit "space" look) — a thick stroke of the centre line, shifted by the anchor so it sits
+// on the right side, in a program colour (building = cyan, exclusion = red). Then the centre line,
+// node handles, and the draggable WIDTH handle on the selected space. 2D + non-map only.
+function drawOffsetOverlays() {
+  if (S.is3d || S.mapMode || !S.offsetSpaces.length) return;
+  const sc = scalePx();
   S.offsetSpaces.forEach((sp, oi) => {
+    if (sp.line.length < 2) return;
     const sel = oi === S.selOffset;
+    const col = sp.program === 'exclusion' ? '239,68,68' : '56,189,248';   // red space | cyan space
+    // shift the centre line so a centred thick stroke reproduces the anchored band
+    const i = Math.max(0, Math.floor((sp.line.length - 1) / 2)), a = sp.line[i], b = sp.line[i + 1] || sp.line[i];
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / L, ny = (b.x - a.x) / L;
+    const shift = sp.anchor === 'center' ? 0 : sp.anchor === 'right' ? -sp.width / 2 : sp.width / 2;
     ctx.save();
-    ctx.lineWidth = sel ? 2 : 1.3; ctx.strokeStyle = sel ? '#38bdf8' : 'rgba(56,189,248,.55)'; ctx.lineCap = 'round'; ctx.beginPath();
-    sp.line.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    sp.line.forEach((p, k) => { const s = toScreen({ x: p.x + nx * shift, y: p.y + ny * shift }); k ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
+    const bw = Math.max(2, sp.width * sc);
+    ctx.lineWidth = bw; ctx.strokeStyle = `rgba(${col},0.18)`; ctx.stroke();          // soft outer edge
+    ctx.lineWidth = Math.max(1, bw - 2.5); ctx.strokeStyle = `rgba(${col},0.42)`; ctx.stroke();  // solid fill body
+    ctx.restore();
+    // centre line
+    ctx.save();
+    ctx.lineWidth = sel ? 2 : 1.3; ctx.strokeStyle = sel ? `rgba(${col},1)` : `rgba(${col},0.6)`; ctx.lineCap = 'round'; ctx.beginPath();
+    sp.line.forEach((p, k) => { const s = toScreen(p); k ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke();
     if (sel) {
-      for (const p of sp.line) { const s = toScreen(p); ctx.beginPath(); ctx.arc(s.x, s.y, 4.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#0ea5e9'; ctx.stroke(); }
-      const h = offsetWidthHandlePos(sp), hs = toScreen(h), ms = toScreen({ x: h.mx, y: h.my });
-      ctx.setLineDash([4, 3]); ctx.lineWidth = 1; ctx.strokeStyle = '#f59e0b'; ctx.beginPath(); ctx.moveTo(ms.x, ms.y); ctx.lineTo(hs.x, hs.y); ctx.stroke(); ctx.setLineDash([]);
+      for (const p of sp.line) { const s = toScreen(p); ctx.beginPath(); ctx.arc(s.x, s.y, 4.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(${col},1)`; ctx.stroke(); }
+      const h = offsetWidthHandlePos(sp), hs = toScreen(h);
       ctx.beginPath(); ctx.arc(hs.x, hs.y, 6, 0, 7); ctx.fillStyle = '#f59e0b'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#7c2d12'; ctx.stroke();
       ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(round2(U.L(sp.width)) + U.lu(), hs.x, hs.y - 9);
     }
     ctx.restore();
   });
 }
+function scalePx() { const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }); return Math.hypot(b.x - a.x, b.y - a.y); }
 $('#offW') && ($('#offW').oninput = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; const v = +$('#offW').value; if (v > 0) { sp.width = U.Lr(v); rebuildOffsetSpace(sp); draw(); } });
 $('#offW') && ($('#offW').onchange = () => { resolveActive(); commit(); });
 document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; sp.anchor = b.dataset.side; rebuildOffsetSpace(sp); showOffsetPopup(); resolveActive(); draw(); commit(); });
