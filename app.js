@@ -921,16 +921,18 @@ function showAislePopup(i) {
 }
 function hideAislePopup() { const el = $('#aislePopup'); if (el) el.classList.remove('show'); }
 
-/* ---- PATH OFFSET (TestFit 5.22-style "consistent space creation"): draw a path, offset it by a
-   constant width into a closed band polygon, then commit the band as a parkzone / building /
-   obstacle. Width/side/type are picked in #offsetPopup with a live preview. ---- */
+/* ---- PATH OFFSET: draw a path, then turn it into one of:
+   • 停車車道 parking — routes the CENTRELINE through addManualAisle → clean double-loaded stalls
+     that stay EDITABLE (drag ends / add bend nodes), the same spine engine as the 場內道路 tool
+     (TestFit's editable drive-aisle behaviour). No frozen parkzone, no weird global re-pack.
+   • 建築帶 / 障礙帶 building/obstacle — offset the path into a constant-width band polygon
+     (TestFit 5.22 "consistent space"); both are vertex-editable after creation. ---- */
 function offsetBand(path, w, side) {        // closed constant-width band along the path (reuses the street-section offsetLine/bandPoly engine)
   if (!path || path.length < 2 || !(w > 0)) return [];
   return side === 'center' ? bandPoly(path, w / 2, -w / 2) : side === 'left' ? bandPoly(path, w, 0) : bandPoly(path, 0, -w);
 }
 function openOffsetPopup(path) {
   S.offsetSrc = path;
-  S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parkzone' };   // canonical feet
   const el = $('#offsetPopup'); if (!el) return;
   const mid = toScreen(path[Math.floor(path.length / 2)]);
   el.style.left = mid.x + 'px'; el.style.top = (mid.y - 14) + 'px'; el.classList.add('show');
@@ -939,7 +941,10 @@ function openOffsetPopup(path) {
 }
 function applyOffsetPreview() {
   if (!S.offsetSrc) return;
-  S.offsetPreview = offsetBand(S.offsetSrc, S.offsetCfg.w, S.offsetCfg.side);
+  // parking previews the double-loaded footprint (aisle + a stall row each side); bands preview the offset polygon
+  S.offsetPreview = S.offsetCfg.kind === 'parking'
+    ? offsetBand(S.offsetSrc, (S.params.aisle || 24) + 2 * (S.params.stallD || 18), 'center')
+    : offsetBand(S.offsetSrc, S.offsetCfg.w, S.offsetCfg.side);
   draw();
 }
 function hideOffsetPopup() {
@@ -947,35 +952,48 @@ function hideOffsetPopup() {
   S.offsetSrc = null; S.offsetPreview = null;
 }
 function offsetGenerate() {
-  if (!S.offsetPreview || S.offsetPreview.length < 3) { hideOffsetPopup(); draw(); return; }
-  const band = S.offsetPreview.map(p => ({ x: p.x, y: p.y })), kind = S.offsetCfg.kind;
+  const src = S.offsetSrc, kind = S.offsetCfg.kind;
+  if (!src || src.length < 2) { hideOffsetPopup(); draw(); return; }
+  if (kind === 'parking') {
+    const line = src.map(p => ({ x: p.x, y: p.y }));
+    hideOffsetPopup();
+    if (!activePark()) { toast('先按「自動排車位」，再用路徑偏移加停車車道'); setTool('select'); draw(); return; }
+    addManualAisle(line);                     // editable spine: tiles double-loaded stalls, draggable afterwards
+    setTool('select'); return;
+  }
+  const band = (S.offsetPreview || []).map(p => ({ x: p.x, y: p.y }));
+  if (band.length < 3) { hideOffsetPopup(); draw(); return; }
   if (kind === 'building') { const nb = makeBuilding(band); S.buildings.push(nb); S.selBuilding = nb; }
-  else if (kind === 'obstacle') S.obstacles.push(band);
-  else S.parkZones.push(band);
+  else S.obstacles.push(band);
   hideOffsetPopup();
-  toast('已沿路徑生成等寬' + ({ parkzone: '停車區', building: '建築', obstacle: '障礙' })[kind]);
+  toast('已沿路徑生成等寬' + (kind === 'building' ? '建築帶（可拖角點調整）' : '障礙帶'));
   setTool('select'); resolveActive(); commit();
 }
 function syncOffsetButtons() {
   document.querySelectorAll('#offSide button').forEach(b => b.classList.toggle('active', b.dataset.side === S.offsetCfg.side));
   document.querySelectorAll('#offKind button').forEach(b => b.classList.toggle('active', b.dataset.kind === S.offsetCfg.kind));
+  const park = S.offsetCfg.kind === 'parking';     // parking auto-sizes (stall+aisle) → width/side N/A
+  if ($('#offWidthRow')) $('#offWidthRow').style.display = park ? 'none' : 'flex';
+  if ($('#offSide')) $('#offSide').style.display = park ? 'none' : 'flex';
+  if ($('#offParkHint')) $('#offParkHint').style.display = park ? 'block' : 'none';
 }
 function drawOffsetPreview() {
   const b = S.offsetPreview; if (!b || b.length < 3) return;
+  const park = S.offsetCfg.kind === 'parking';
   ctx.save();
-  pathPoly(b, true); ctx.fillStyle = 'rgba(56,189,248,.22)'; ctx.fill();
+  pathPoly(b, true); ctx.fillStyle = park ? 'rgba(56,189,248,.14)' : 'rgba(56,189,248,.22)'; ctx.fill();
   ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#38bdf8'; pathPoly(b, true); ctx.stroke(); ctx.setLineDash([]);
-  if (S.offsetSrc) {
-    ctx.lineWidth = 1.4; ctx.strokeStyle = '#facc15'; ctx.beginPath();
+  if (S.offsetSrc) {                                 // the drawn centreline (yellow = band, cyan = parking aisle)
+    ctx.lineWidth = park ? 2.4 : 1.4; ctx.strokeStyle = park ? '#38bdf8' : '#facc15'; ctx.lineCap = 'round'; ctx.beginPath();
     S.offsetSrc.forEach((p, i) => { const s = toScreen(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
     ctx.stroke();
   }
   ctx.restore();
 }
-S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parkzone' };
+S.offsetCfg = S.offsetCfg || { w: 20, side: 'left', kind: 'parking' };
 $('#offW') && ($('#offW').oninput = () => { const v = +$('#offW').value; if (v > 0) { S.offsetCfg.w = U.Lr(v); applyOffsetPreview(); } });
 document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { S.offsetCfg.side = b.dataset.side; syncOffsetButtons(); applyOffsetPreview(); });
-document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { S.offsetCfg.kind = b.dataset.kind; syncOffsetButtons(); });
+document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { S.offsetCfg.kind = b.dataset.kind; syncOffsetButtons(); applyOffsetPreview(); });
 $('#offGo') && ($('#offGo').onclick = offsetGenerate);
 $('#offCancel') && ($('#offCancel').onclick = () => { hideOffsetPopup(); draw(); });
 // draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,

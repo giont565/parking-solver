@@ -382,7 +382,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h12M11 8l4 4-4 4M21 4v16"/></svg>出入口</button>
     <button class="tool" data-tool="subdivide" title="切割基地成多塊子地 (D)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
-    <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 等距生成固定寬度的空間帶（停車區／建築／障礙）(F)">
+    <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 沿線生成 停車車道（雙排+可拖曳調整）／建築帶／障礙帶 (F)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18c5-5 9-5 16-8"/><path d="M4 11c5-5 9-5 16-8" stroke-dasharray="3 2"/></svg>偏移</button>
     <button class="tool" data-tool="measure" title="量測距離 (M)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
@@ -543,16 +543,17 @@
       <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖兩端可改這條場內道路的方向／長短、雙擊車身加彎折點，車位跟著重貼</div>
     </div>
 
-    <!-- path-offset tool: after drawing the path, pick width / side / target then generate -->
+    <!-- path-offset tool: after drawing the path, pick target then generate -->
     <div id="offsetPopup">
-      <div class="cap">路徑偏移 — 等寬空間帶</div>
-      <div class="row"><span class="lab">寬度</span><input id="offW" type="number" step="0.5" min="1"><span class="lab" id="offWu">ft</span></div>
+      <div class="cap">沿路徑生成</div>
+      <div class="row" id="offKind">
+        <button data-kind="parking">停車車道</button><button data-kind="building">建築帶</button><button data-kind="obstacle">障礙帶</button>
+      </div>
+      <div class="row" id="offWidthRow"><span class="lab">寬度</span><input id="offW" type="number" step="0.5" min="1"><span class="lab" id="offWu">ft</span></div>
       <div class="row" id="offSide">
         <button data-side="left">A 側</button><button data-side="center">置中</button><button data-side="right">B 側</button>
       </div>
-      <div class="row" id="offKind">
-        <button data-kind="parkzone">停車區</button><button data-kind="building">建築</button><button data-kind="obstacle">障礙</button>
-      </div>
+      <div class="lab" id="offParkHint" style="display:none;line-height:1.5;">沿這條線自動鋪<b>雙排停車</b>＋接進動線網，<b>之後可拖兩端／加彎折點調整</b>（同「場內道路」）</div>
       <div class="row"><button id="offGo">✓ 生成</button><button id="offCancel" class="del">✕</button></div>
     </div>
   </div>
