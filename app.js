@@ -1029,7 +1029,7 @@ function drawOffsetOverlays() {
   S.offsetSpaces.forEach((sp, oi) => {
     if (sp.line.length < 2) return;
     const sel = oi === S.selOffset;
-    const col = sp.program === 'exclusion' ? '239,68,68' : '56,189,248';   // red space | cyan space
+    const col = sp.program === 'exclusion' ? '239,68,68' : sp.program === 'easement' ? '168,85,247' : '56,189,248';   // red | purple(地役權) | cyan
     // shift the centre line so a centred thick stroke reproduces the anchored band
     const i = Math.max(0, Math.floor((sp.line.length - 1) / 2)), a = sp.line[i], b = sp.line[i + 1] || sp.line[i];
     const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / L, ny = (b.x - a.x) / L;
