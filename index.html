@@ -788,12 +788,12 @@
       <div class="group" id="grpUnitMix">
         <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>單元配比 Unit Mix</h3>
         <div class="body">
-          <div class="field" style="font-size:10px;color:var(--muted);"><span style="flex:1;">房型</span><span style="width:60px;text-align:right;">佔比 %</span><span style="width:60px;text-align:right;">坪數 SF</span></div>
-          <div class="field"><label>Studio 套房</label><input type="number" id="uxStudioP" value="15" min="0" max="100" style="width:60px;"><input type="number" id="uxStudioS" value="500" min="200" style="width:60px;"></div>
-          <div class="field"><label>1-Bed 一房</label><input type="number" id="ux1P" value="45" min="0" max="100" style="width:60px;"><input type="number" id="ux1S" value="700" min="300" style="width:60px;"></div>
-          <div class="field"><label>2-Bed 二房</label><input type="number" id="ux2P" value="30" min="0" max="100" style="width:60px;"><input type="number" id="ux2S" value="1000" min="500" style="width:60px;"></div>
-          <div class="field"><label>3-Bed 三房</label><input type="number" id="ux3P" value="10" min="0" max="100" style="width:60px;"><input type="number" id="ux3S" value="1250" min="700" style="width:60px;"></div>
-          <div class="hint" id="uxSum">佔比合計：100%</div>
+          <div class="field" style="font-size:10px;color:var(--muted);"><span style="flex:1;">房型</span><span style="width:52px;text-align:right;">佔比 %</span><span style="width:52px;text-align:right;">坪數</span><span style="width:52px;text-align:right;">車位/戶</span></div>
+          <div class="field"><label>Studio 套房</label><input type="number" id="uxStudioP" value="15" min="0" max="100" style="width:52px;"><input type="number" id="uxStudioS" value="500" min="200" style="width:52px;"><input type="number" id="pkStudio" value="" placeholder="—" step="0.1" min="0" style="width:52px;" title="這型每戶車位數；留空=用全域車位比"></div>
+          <div class="field"><label>1-Bed 一房</label><input type="number" id="ux1P" value="45" min="0" max="100" style="width:52px;"><input type="number" id="ux1S" value="700" min="300" style="width:52px;"><input type="number" id="pk1" value="" placeholder="—" step="0.1" min="0" style="width:52px;"></div>
+          <div class="field"><label>2-Bed 二房</label><input type="number" id="ux2P" value="30" min="0" max="100" style="width:52px;"><input type="number" id="ux2S" value="1000" min="500" style="width:52px;"><input type="number" id="pk2" value="" placeholder="—" step="0.1" min="0" style="width:52px;"></div>
+          <div class="field"><label>3-Bed 三房</label><input type="number" id="ux3P" value="10" min="0" max="100" style="width:52px;"><input type="number" id="ux3S" value="1250" min="700" style="width:52px;"><input type="number" id="pk3" value="" placeholder="—" step="0.1" min="0" style="width:52px;"></div>
+          <div class="hint" id="uxSum">佔比合計：100%　·　車位/戶留空＝用上方全域車位比</div>
         </div>
       </div>
 

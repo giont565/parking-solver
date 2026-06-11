@@ -3378,6 +3378,11 @@ function readSiteParams() {
       { type: '2br', pct: +$('#ux2P').value, size: U.Ar(+$('#ux2S').value) },
       { type: '3br', pct: +$('#ux3P').value, size: U.Ar(+$('#ux3S').value) },
     ],
+    parkRatioByType: (() => {                       // per-unit-type parking ratio (Spacio-style); blank → use global
+      const m = { studio: $('#pkStudio'), '1br': $('#pk1'), '2br': $('#pk2'), '3br': $('#pk3') }, r = {}; let any = false;
+      for (const k in m) { const v = m[k] && m[k].value; if (v !== '' && v != null && +v >= 0) { r[k] = +v; any = true; } }
+      return any ? r : null;
+    })(),
     fin: {
       landCost: +$('#fLand').value, hardCost: +$('#fHard').value, softPct: +$('#fSoft').value,
       rentMo: +$('#fRentMo').value, rentSfYr: +$('#fRentSf').value, opexPct: +$('#fOpex').value,
@@ -3602,7 +3607,7 @@ $('#sParkType').addEventListener('change', () => {
   if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite();
 });
 ['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevelsAbove', '#sParkLevelsBelow', '#sStructEff',
- '#uxStudioP', '#ux1P', '#ux2P', '#ux3P', '#uxStudioS', '#ux1S', '#ux2S', '#ux3S',
+ '#uxStudioP', '#ux1P', '#ux2P', '#ux3P', '#uxStudioS', '#ux1S', '#ux2S', '#ux3S', '#pkStudio', '#pk1', '#pk2', '#pk3',
  '#fLand', '#fHard', '#fSoft', '#fRentMo', '#fRentSf', '#fOpex', '#fGrowth', '#fHold', '#fExitCap'].forEach(sel =>
   $(sel).addEventListener('change', () => { updateUxSum(); if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); }));
 
@@ -4080,7 +4085,28 @@ function compareSchemes() {
     html += `<tr><td>${esc(k)}</td>` + cols.map(c => `<td>${esc(c[k] == null ? '—' : c[k])}</td>`).join('') + '</tr>';
   }
   html += '</table><div style="font-size:11px;color:#94a3b8;margin-top:10px;">日期：' + arr.map(s => esc(s.date)).join(' ｜ ') + '</div>';
-  openModal('方案比較（' + arr.length + ' 個）', html);
+  openModal('方案比較（' + arr.length + ' 個）', schemeRadar(arr) + html);
+}
+// RADAR chart (Hektar-style multi-scheme comparison): site schemes plotted on 5 normalised KPI axes.
+function schemeRadar(arr) {
+  const axes = [['戶數', s => s.units || 0], ['車位', s => s.parkingProvided || 0], ['FAR', s => s.far || 0],
+    ['投報率', s => (s.fin && s.fin.yieldOnCost) || 0], ['建蔽', s => s.coverage || 0]];
+  const sites = arr.map((sc, i) => ({ sc, i, s: (sc.mode === 'site' && sc.data && sc.data.site) ? sc.data.site : null })).filter(x => x.s);
+  if (sites.length < 2) return '';                                  // need ≥2 site schemes to compare
+  const max = axes.map(([, f]) => Math.max(1, ...sites.map(x => f(x.s))));
+  const cx = 150, cy = 135, R = 100, n = axes.length, COL = ['#38bdf8', '#f59e0b', '#22c55e', '#a855f7', '#ef4444'];
+  const ang = k => -Math.PI / 2 + k * 2 * Math.PI / n;
+  const pt = (k, r) => `${(cx + Math.cos(ang(k)) * R * r).toFixed(1)},${(cy + Math.sin(ang(k)) * R * r).toFixed(1)}`;
+  let svg = `<svg viewBox="0 0 300 300" width="300" height="300" style="display:block;margin:0 auto 6px;">`;
+  for (let g = 1; g <= 4; g++) svg += `<polygon points="${axes.map((_, k) => pt(k, g / 4)).join(' ')}" fill="none" stroke="#334155" stroke-width="0.7"/>`;
+  axes.forEach((a, k) => { svg += `<line x1="${cx}" y1="${cy}" x2="${pt(k, 1).split(',')[0]}" y2="${pt(k, 1).split(',')[1]}" stroke="#334155" stroke-width="0.7"/>`;
+    const lp = pt(k, 1.16).split(','); svg += `<text x="${lp[0]}" y="${lp[1]}" fill="#94a3b8" font-size="11" text-anchor="middle" dominant-baseline="middle">${a[0]}</text>`; });
+  sites.forEach((x, idx) => { const c = COL[idx % COL.length];
+    svg += `<polygon points="${axes.map(([, f], k) => pt(k, f(x.s) / max[k])).join(' ')}" fill="${c}33" stroke="${c}" stroke-width="1.8"/>`; });
+  svg += '</svg>';
+  const legend = '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;font-size:11px;margin-bottom:10px;">'
+    + sites.map((x, idx) => `<span style="color:#cbd5e1;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${COL[idx % COL.length]};margin-right:4px;vertical-align:-1px;"></span>${esc(x.sc.name)}</span>`).join('') + '</div>';
+  return svg + legend;
 }
 
 /* IRR sensitivity grid — IRR vs cost (rows) × rent (cols), each ±10% */

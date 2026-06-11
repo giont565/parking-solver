@@ -1581,10 +1581,12 @@ function solveSite(input) {
     }
   }
 
-  // 5. parking required vs provided (mixed-use adds the ground-floor retail demand at ~3 / 1000 SF)
-  let parkingRequired = (residential
-    ? Math.ceil(units * p.parkingRatio)
-    : Math.ceil(gfa / 1000 * p.parkingRatio))
+  // 5. parking required vs provided (mixed-use adds the ground-floor retail demand at ~3 / 1000 SF).
+  // residential demand: per-unit-type ratio (Spacio-style) when supplied, else units × global ratio.
+  const resiPark = (p.parkRatioByType && unitsByType.length)
+    ? Math.ceil(unitsByType.reduce((s, u) => s + u.count * (p.parkRatioByType[u.type] != null ? p.parkRatioByType[u.type] : p.parkingRatio), 0))
+    : Math.ceil(units * p.parkingRatio);
+  let parkingRequired = (residential ? resiPark : Math.ceil(gfa / 1000 * p.parkingRatio))
     + (groundRetail ? Math.ceil(retailGLA / 1000 * 3) : 0);
   let parkCapped = false;
   const structured = p.parkingType === 'structured' || isTower;        // towers always sit on a structured parking podium
