@@ -725,6 +725,18 @@ function spineKeptSide(sp, park, aIdx) {   // single-loaded aisle → which side
   for (const s of park.stalls) { if (s.spine !== aIdx) continue; ((s.cx - a.x) * per.x + (s.cy - a.y) * per.y) >= 0 ? pos++ : neg++; }
   return (pos === 0 && neg === 0) ? 0 : (pos >= neg ? 1 : -1);
 }
+// Coalesce live drag re-tiles to ONE per animation frame. Re-tiling on every mousemove made
+// aisle dragging stutter (heavy: re-tiles the whole lane + recomputes all metrics each move);
+// rAF-throttling keeps the stalls following live but caps the heavy work at 60fps → smooth drag.
+let _spineRaf = 0;
+function scheduleSpineRetile(si) {
+  if (_spineRaf) return;
+  _spineRaf = requestAnimationFrame(() => {
+    _spineRaf = 0;
+    if (!(S.dragSpine || S.dragSpineBody)) return;
+    retileSpine(si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw();
+  });
+}
 function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node → an aisle re-tiles its stalls, a connector lane just reshapes
   const park = activePark(); if (!park || !park.spines || !park.spines[si]) return;
   const sp = park.spines[si];
@@ -2130,12 +2142,12 @@ cv.addEventListener('pointermove', e => {
   }
   if (S.dragSpine) {                                 // dragging a spine end node → reshape the lane + re-tile its stalls LIVE
     const park = activePark(), sp = park && park.spines && park.spines[S.dragSpine.si];
-    if (sp) { sp.line[S.dragSpine.ni] = fineSnap(w); retileSpine(S.dragSpine.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
+    if (sp) { sp.line[S.dragSpine.ni] = fineSnap(w); scheduleSpineRetile(S.dragSpine.si); }
     return;
   }
   if (S.dragSpineBody) {                             // move a WHOLE drive aisle (translate the line; its stalls follow)
     const park = activePark(), sp = park && park.spines && park.spines[S.dragSpineBody.si];
-    if (sp) { const d = { x: w.x - S.dragSpineBody.last.x, y: w.y - S.dragSpineBody.last.y }; sp.line = sp.line.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragSpineBody.last = w; retileSpine(S.dragSpineBody.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
+    if (sp) { const d = { x: w.x - S.dragSpineBody.last.x, y: w.y - S.dragSpineBody.last.y }; sp.line = sp.line.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragSpineBody.last = w; scheduleSpineRetile(S.dragSpineBody.si); }
     return;
   }
   if (S.dragBoundaryEdge) {                          // stretch a boundary EDGE (move both its corners); parking re-flows on release
