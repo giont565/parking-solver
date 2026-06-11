@@ -1486,14 +1486,26 @@ function computeEarthwork() {
   const out = $('#ewResult'); if (!out) return;
   if (S.boundary.length < 3) { out.textContent = '先畫基地。'; S._ewCache = null; return; }
   const NW = +$('#eNW').value, NE = +$('#eNE').value, SW = +$('#eSW').value, SE = +$('#eSE').value;
-  if (!NW && !NE && !SW && !SE) { out.textContent = '輸入四角標高後自動算挖填量與土方成本。'; S._ewCache = null; return; }
+  if (!S._ewTerrain && !NW && !NE && !SW && !SE) { out.textContent = '按「自動抓真實地形」或手動輸入四角標高。'; S._ewCache = null; return; }
   const pad = +$('#ePad').value, cutC = +$('#eCutC').value, fillC = +$('#eFillC').value, haulC = +$('#eHaulC').value;
   const bb = PS.bbox(S.boundary), CELL = 5, dx = Math.max(bb.maxX - bb.minX, 1), dy = Math.max(bb.maxY - bb.minY, 1);
   const cellA = CELL * CELL; let cut = 0, fill = 0, gSum = 0, gA = 0; const cells = [];
+  // ground elevation at (x,y): real sampled terrain grid (auto-fetched) if present, else 4-corner bilinear
+  const T = S._ewTerrain;
+  const groundAt = (x, y) => {
+    if (T) {                                  // bilinear-interpolate within the fetched NxN real-elevation grid
+      const fx = Math.min(T.n - 1.001, Math.max(0, (x - bb.minX) / dx * (T.n - 1)));
+      const fy = Math.min(T.n - 1.001, Math.max(0, (y - bb.minY) / dy * (T.n - 1)));
+      const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+      const g00 = T.z[iy * T.n + ix], g10 = T.z[iy * T.n + ix + 1], g01 = T.z[(iy + 1) * T.n + ix], g11 = T.z[(iy + 1) * T.n + ix + 1];
+      return (g00 * (1 - tx) + g10 * tx) * (1 - ty) + (g01 * (1 - tx) + g11 * tx) * ty;
+    }
+    const u = (x - bb.minX) / dx, v = (y - bb.minY) / dy;
+    return (SW * (1 - u) + SE * u) * (1 - v) + (NW * (1 - u) + NE * u) * v;
+  };
   for (let y = bb.minY + CELL / 2; y < bb.maxY; y += CELL) for (let x = bb.minX + CELL / 2; x < bb.maxX; x += CELL) {
     if (!PS.pointInPoly({ x, y }, S.boundary)) continue;
-    const u = (x - bb.minX) / dx, v = (y - bb.minY) / dy;
-    const g = (SW * (1 - u) + SE * u) * (1 - v) + (NW * (1 - u) + NE * u) * v;   // bilinear ground
+    const g = groundAt(x, y);
     const d = g - pad; if (d > 0) cut += d * cellA; else fill += -d * cellA;
     gSum += g * cellA; gA += cellA; cells.push({ x, y, d });
   }
@@ -1504,6 +1516,41 @@ function computeEarthwork() {
   out.innerHTML = `挖 <b>${fmt(cutY)}</b> yd³ ・ 填 <b>${fmt(fillY)}</b> yd³ ・ ${net >= 0 ? '外運 export' : '進土 import'} <b>${fmt(Math.abs(net))}</b> yd³<br>土方成本約 <b>$${fmt(cost)}</b> ・ 平衡整平高 ≈ <b>${balance.toFixed(1)} ft</b>（挖填相抵、免外運）`;
   S._ewCache = { cells, max: Math.max(1, ...cells.map(c => Math.abs(c.d))), cell: CELL };
   draw();
+}
+// AUTOMATIC CUT & FILL: fetch a real elevation grid for the geolocated parcel from OpenTopoData
+// (free, no API key, global SRTM) → store as S._ewTerrain → computeEarthwork uses the real surface.
+// Online-only (needs the parcel placed on the real map); offline still supports manual 4-corner input.
+async function autoFetchTerrain() {
+  const btn = $('#ewAuto');
+  if (!S.mapMode || !S.geo.set) { toast('請先切「地圖」模式並把基地放到真實位置，再自動抓地形'); return; }
+  if (S.boundary.length < 3) { toast('先畫基地邊界'); return; }
+  const N = 6;                                     // 6×6 = 36-point elevation grid (one API request)
+  const bb = PS.bbox(S.boundary), dx = bb.maxX - bb.minX, dy = bb.maxY - bb.minY;
+  const locs = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const ll = feetToLatLng({ x: bb.minX + dx * i / (N - 1), y: bb.minY + dy * j / (N - 1) });
+    locs.push(`${ll.lat.toFixed(6)},${ll.lng.toFixed(6)}`);
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '⛰️ 抓地形中…'; }
+  try {
+    const r = await fetch('https://api.opentopodata.org/v1/srtm90m?locations=' + locs.join('|'));
+    const j = await r.json();
+    if (!j.results || j.results.some(x => x.elevation == null)) throw new Error('資料缺漏');
+    const z = j.results.map(x => x.elevation * 3.28084);   // metres → feet
+    S._ewTerrain = { n: N, z };
+    // surface the 4 corners into the manual fields (display + offline fallback)
+    $('#eNW').value = Math.round(z[(N - 1) * N]);            // top-left in grid = NW (minX, maxY... grid j=N-1 is maxY)
+    $('#eNE').value = Math.round(z[(N - 1) * N + (N - 1)]);
+    $('#eSW').value = Math.round(z[0]);
+    $('#eSE').value = Math.round(z[N - 1]);
+    const lo = Math.min(...z), hi = Math.max(...z);
+    if (!+$('#ePad').value) $('#ePad').value = ((lo + hi) / 2).toFixed(1);   // default pad = mid grade
+    computeEarthwork();
+    if (!S.layers.earthwork.vis) toggleLayer('earthwork', 'vis');           // show the heatmap
+    toast(`已抓真實地形：標高 ${Math.round(lo)}–${Math.round(hi)} ft，已算挖填方`);
+  } catch (e) {
+    toast('抓地形失敗（' + (e.message || '網路/服務') + '）— 可改手動填四角標高');
+  } finally { if (btn) { btn.disabled = false; btn.textContent = '⛰️ 自動抓真實地形 → 算挖填方'; } }
 }
 function drawEarthwork() {                       // cut = warm/red (above pad), fill = cool/blue (below pad)
   if (!S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || S.mapMode || !S._ewCache) return;
@@ -3030,6 +3077,7 @@ $('#btnClear').onclick = () => {
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
   S.offsetSpaces = []; S.selOffset = null; S.dragOffset = null; hideOffsetPopup();
+  S._ewTerrain = null; S._ewCache = null;
   S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -3456,8 +3504,10 @@ $('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sPark
   el.addEventListener('input', () => { if (S.mode !== 'site') updateFinancials(); });
   el.addEventListener('change', () => { if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); } else { updateFinancials(); commit(); } });
 });
-['#eNW', '#eNE', '#eSW', '#eSE', '#ePad', '#eCutC', '#eFillC', '#eHaulC'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', computeEarthwork); });
+['#eNW', '#eNE', '#eSW', '#eSE'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', () => { S._ewTerrain = null; computeEarthwork(); }); });   // manual corner edit overrides auto-terrain
+['#ePad', '#eCutC', '#eFillC', '#eHaulC'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', computeEarthwork); });
 if ($('#ePadBal')) $('#ePadBal').onclick = () => { computeEarthwork(); $('#ePad').value = (S._ewBalance || 0).toFixed(1); computeEarthwork(); toast('整平高設為挖填平衡點（免外運）'); };
+if ($('#ewAuto')) $('#ewAuto').onclick = autoFetchTerrain;
 $('#sParkType').addEventListener('change', () => {
   const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
