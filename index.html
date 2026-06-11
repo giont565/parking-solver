@@ -665,6 +665,18 @@
         <div class="field" id="maxRunRow1" style="display:none;"><label>每排最多 Max stalls/run</label><input type="number" id="pMaxRun" value="12" step="1" min="3" max="40"></div>
         <div class="field" id="maxRunRow2" style="display:none;"><label>島寬 Gap width (ft)</label><input type="number" id="pMaxGap" value="9" step="1" min="4" max="30"></div>
         <div class="field"><label>建築高度 Height (ft)</label><input type="number" id="pH" value="35" step="1" min="8" max="400"></div>
+        <div class="field"><label>🏢 室內車庫 Garage</label>
+          <select id="pIndoor" title="把畫的邊界當建築樓板：自動生成坡道（層高×斜率實算長度）、兩座逃生梯間、結構柱網，車位避開後多層疊算總量">
+            <option value="0">關閉（戶外平面）</option>
+            <option value="1">啟用（多層室內）</option>
+          </select>
+        </div>
+        <div class="field indoorRow" style="display:none;"><label>地上層數 Levels ↑</label><input type="number" id="pIndAbove" value="3" step="1" min="1" max="12"></div>
+        <div class="field indoorRow" style="display:none;"><label>地下層數 Levels ↓</label><input type="number" id="pIndBelow" value="0" step="1" min="0" max="6"></div>
+        <div class="field indoorRow" style="display:none;"><label>層高 Floor-to-floor (ft)</label><input type="number" id="pIndFH" value="11" step="0.5" min="8" max="20"></div>
+        <div class="field indoorRow" style="display:none;"><label>柱距 Column grid (ft)</label><input type="number" id="pIndCol" value="27" step="1" min="15" max="40"></div>
+        <div class="field indoorRow" style="display:none;"><label>坡道斜率 Ramp 1:N</label><input type="number" id="pIndSlope" value="6" step="1" min="4" max="12" title="坡道長＝層高×N＋緩衝段；台灣建築技術規則室內坡道 1:6"></div>
+        <div class="hint indoorRow" style="display:none;">室內模式：邊界＝樓板輪廓。自動配坡道（≥2 層才需要）、兩座逃生梯間、結構柱網；被柱壓到的車位誠實扣除。總車位＝標準層×層數。切「3D」看疊層。</div>
         <div class="field"><label>🎯 目標車位 Target</label><input type="number" id="pTarget" value="0" min="0" step="10" placeholder="0=不限"></div>
         <div class="field"><label>🌳 景觀樹 配置</label>
           <div class="seg" id="treesSeg" style="width:120px;">

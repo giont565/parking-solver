@@ -170,10 +170,11 @@ const REGIONS = {
   eu: { unit: 'metric', stallW: 8.20, stallD: 16.40, aisle: 19.69, setback: 9.8,    // 2.5×5.0 m, aisle 6 m
         site: { floorH: 11.5, maxFAR: 3.0, maxHeight: 98, maxCov: 50, maxDUA: 0, sbF: 16.4, sbS: 9.8, sbR: 16.4, parkRatio: 0.8 } },
 };
-const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'pGreen', 'pMaxGap', 'cW', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR'];
+const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'pGreen', 'pMaxGap', 'cW', 'pIndFH', 'pIndCol', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR'];
 const AREA_INPUTS = ['uxStudioS', 'ux1S', 'ux2S', 'ux3S', 'pGFA'];
 const LEN_LABELS = {
   pW: '車格寬 Stall W', pD: '車格深 Stall D', pA: '車道寬 Aisle', pS: '退縮 Setback', pH: '建築高度 Height',
+  pIndFH: '層高 Floor-to-floor', pIndCol: '柱距 Column grid',
   sFloorH: '樓層高 Floor-to-floor', zHeight: '最大高度 Height', bHeight: '建築高度 Height', cW: '🚗 Compact 車格寬',
 };
 
@@ -382,8 +383,19 @@ function draw() {
       ctx.restore();
     }
     // structured garage: the express RAMP + the structural COLUMN grid on the typical deck
-    if (S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap) && S.site.garage) {
-      const g = S.site.garage;
+    // (site mode: podium/wrap garage; parking mode: the indoor multi-level garage)
+    const g2d = (S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap)) ? S.site.garage
+      : (S.mode !== 'site' && S.solution && S.solution.garage) || null;
+    if (g2d) {
+      const g = g2d;
+      if (g.cores) for (const co of g.cores) {           // egress stair cores
+        pathPoly(co, true);
+        ctx.fillStyle = 'rgba(71,85,105,.85)'; ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(148,163,184,.9)'; ctx.stroke();
+        const cc = toScreen({ x: co.reduce((s, p) => s + p.x, 0) / co.length, y: co.reduce((s, p) => s + p.y, 0) / co.length });
+        ctx.fillStyle = 'rgba(226,232,240,.95)'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('梯間', cc.x, cc.y);
+      }
       if (g.ramp) {
         pathPoly(g.ramp, true);
         ctx.fillStyle = 'rgba(245,158,11,.5)'; ctx.fill();
@@ -1775,8 +1787,13 @@ function updateTabBar() {
   const siteKv = [['面積', `${U.big(area).toFixed(2)} ${U.bu()}`], ['', `${Math.round(U.A(area)).toLocaleString()} ${U.au()}`]];
   if (S.mode === 'site' && S.site) siteKv.push(['FAR', S.site.far.toFixed(2)], ['建蔽率', S.site.coverage.toFixed(0) + '%']);
   let html = col('SITE 基地', siteKv);
-  html += col('PARKING 停車', [['車位', stalls.toLocaleString()],
-    ['單格', `${Math.round(U.A(moduleArea))} ${U.au()}`], ['覆蓋', cover + '%']]);
+  const tg2 = park && park.garage;            // indoor garage: typical floor × levels
+  html += tg2
+    ? col('PARKING 停車', [['總車位', (stalls * (tg2.levelsAbove + tg2.levelsBelow)).toLocaleString()],
+        ['每層', `${stalls.toLocaleString()} × ${tg2.levelsAbove + tg2.levelsBelow}層`],
+        ['效率', `${Math.round(U.A(tg2.floorArea / Math.max(stalls, 1)))} ${U.au()}/位`]])
+    : col('PARKING 停車', [['車位', stalls.toLocaleString()],
+        ['單格', `${Math.round(U.A(moduleArea))} ${U.au()}`], ['覆蓋', cover + '%']]);
   if (S.mode !== 'site' && park) {            // parking mode — stall-type & target breakdown
     const cc = { standard:0, compact:0, ada:0, ev:0, trailer:0 };
     park.stalls.forEach(s => cc[s.type]++);
@@ -1835,6 +1852,10 @@ function fit3D() {
     }
     add(fp, top); add(fp, bot);
   }
+  if (S.mode !== 'site' && S.solution && S.solution.garage) {     // indoor garage: frame podium decks + basements
+    const g = S.solution.garage, fh = g.floorHeight || 11;
+    add(S.boundary, g.levelsAbove * fh); add(S.boundary, -g.levelsBelow * fh);
+  }
   if (!pts.length) return;
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
   const bb = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
@@ -1859,19 +1880,21 @@ function draw3D() {
   ctx.beginPath();
   S.boundary.forEach((p, i) => { const s = iso(p.x, p.y, 0); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   ctx.closePath();
-  const hasBasement = S.mode === 'site' && S.site && S.site.structured && S.site.garage && S.site.garage.levelsBelow > 0;
+  // garage to stack in 3D: site mode's podium/wrap garage, or parking mode's indoor garage
+  const garage3d = (S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap) && S.site.parkSol) ? S.site.garage
+    : (S.mode !== 'site' && S.solution && S.solution.garage) || null;
+  const hasBasement = !!(garage3d && garage3d.levelsBelow > 0);
   ctx.fillStyle = hasBasement ? 'rgba(27,42,61,.45)' : 'rgba(27,42,61,.95)'; ctx.fill();   // see basements through grade
   ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.stroke();
 
   // collect all faces, depth-sort (painter's algorithm)
   const faces = [];
   const baseDepth = poly => Math.max(...poly.map(p => p.x + p.y));
-  const structured = S.mode === 'site' && S.site && (S.site.structured || S.site.isWrap) && S.site.garage && S.site.parkSol;
   const park3d = S.mode === 'site' ? (S.site && S.site.parkSol) : S.solution;
-  if (structured) {
+  if (garage3d && park3d) {
     // MULTI-LEVEL GARAGE: stack the typical deck at every level — podium decks up from grade,
     // basement decks below it — plus the real express ramp on each, and columns as posts.
-    const g = S.site.garage, fh = g.floorHeight || 11, deck = park3d, foot = g.deckPoly || S.site.footprint;
+    const g = garage3d, fh = g.floorHeight || 11, deck = park3d, foot = g.deckPoly || (S.site && S.site.footprint) || S.boundary;
     const zs = [];
     for (let k = 0; k < g.levelsAbove; k++) zs.push(k * fh);
     for (let k = 1; k <= g.levelsBelow; k++) zs.push(-k * fh);
@@ -1889,6 +1912,7 @@ function draw3D() {
       const sq = [{ x: cp.x - cs, y: cp.y - cs }, { x: cp.x + cs, y: cp.y - cs }, { x: cp.x + cs, y: cp.y + cs }, { x: cp.x - cs, y: cp.y + cs }];
       pushBox(faces, sq, colSpan, '#334155', null, false, null, colBot);
     }
+    if (g.cores) for (const co of g.cores) pushBox(faces, co, colSpan, '#475569', null, true, null, colBot);   // egress cores run the full stack
   } else if (park3d) {
     for (const a of park3d.aisles)
       faces.push({ pts: a.poly.map(p => ({ x: p.x, y: p.y, z: 0 })), fill: 'rgba(203,213,225,.10)', stroke: null, depth: baseDepth(a.poly), z: 0 });
@@ -2612,6 +2636,12 @@ function readParams() {
   S.opts.motoPct = $('#pMoto') ? +$('#pMoto').value : 0;
   S.opts.gfa = U.Ar(+$('#pGFA').value);
   S.opts.target = +$('#pTarget').value;
+  S.params.indoor = $('#pIndoor').value === '1';
+  S.params.indAbove = Math.max(1, +$('#pIndAbove').value || 1);
+  S.params.indBelow = Math.max(0, +$('#pIndBelow').value || 0);
+  S.params.indFH = U.Lr(+$('#pIndFH').value) || 11;
+  S.params.indColSp = U.Lr(+$('#pIndCol').value) || 27;
+  S.params.indSlope = +$('#pIndSlope').value || 6;
 }
 
 function doSolve() {
@@ -2621,18 +2651,27 @@ function doSolve() {
   $('#busyTxt').textContent = '運算最佳配置中…';
   setTimeout(() => {
     const t0 = performance.now();
-    const res = PS.solve({
+    const baseInput = {
       boundary: S.boundary, buildings: bPolys(), obstacles: S.obstacles, roads: S.roads, parkZones: S.parkZones, entrances: S.entrances,
       params: { ...S.params, gridShift: S.gridShift }, opts: S.opts,
-    });
+    };
+    const res = S.params.indoor
+      ? PS.indoorGarage({ ...baseInput, indoor: { levelsAbove: S.params.indAbove, levelsBelow: S.params.indBelow, floorH: S.params.indFH, colSp: S.params.indColSp, slope: S.params.indSlope } })
+      : PS.solve(baseInput);
     S.solution = res; S.selStall = null;
     applyAisleEdits(S.solution);                  // re-apply manual aisle overrides (single-load / remove) to the fresh pack
     deriveSpines(S.solution);                     // every drive aisle becomes an editable spine (centre-line + nodes)
     $('#busy').classList.remove('show');
     updateMetrics(); draw(); commit(); saveParcelDev();
     const ms = Math.round(performance.now() - t0);
-    if (res) toast(`完成：${res.stalls.length} 車位　(角度 ${res.metrics.bestAngleDeg}°, ${ms}ms)`);
-    $('#stMsg').textContent = res ? `已排 ${res.stalls.length} 車位` : '無法排版';
+    if (res && res.garage) {
+      const lv = res.garage.levelsAbove + res.garage.levelsBelow;
+      toast(`完成：每層 ${res.garage.perFloor} × ${lv} 層 = ${res.garage.perFloor * lv} 車位　(${ms}ms)`);
+      $('#stMsg').textContent = `室內車庫：每層 ${res.garage.perFloor} × ${lv} 層 = ${res.garage.perFloor * lv} 車位`;
+    } else {
+      if (res) toast(`完成：${res.stalls.length} 車位　(角度 ${res.metrics.bestAngleDeg}°, ${ms}ms)`);
+      $('#stMsg').textContent = res ? `已排 ${res.stalls.length} 車位` : '無法排版';
+    }
   }, 30);
 }
 
@@ -2648,7 +2687,10 @@ function updateMetrics() {
   const sol = S.solution;
   const counts = { standard:0, compact:0, ada:0, ev:0, trailer:0 };
   if (sol) sol.stalls.forEach(s => counts[s.type]++);
-  const total = sol ? sol.stalls.length : 0;
+  // indoor garage: the packed deck is the TYPICAL floor — totals multiply by the level count
+  const gar = sol && sol.garage;
+  const garLv = gar ? gar.levelsAbove + gar.levelsBelow : 1;
+  const total = sol ? sol.stalls.length * garLv : 0;
 
   $('#mTotal').textContent = total.toLocaleString();
 
@@ -2664,12 +2706,14 @@ function updateMetrics() {
   const ratio = U.metric() ? (gfa > 0 ? total / (U.A(gfa) / 100) : 0) : (gfa > 0 ? total / (gfa / 1000) : 0);
   $('#mRatio').textContent = (gfa > 0 && total) ? ratio.toFixed(1) : '—';
 
-  // efficiency: parking footprint area per stall
+  // efficiency: parking footprint area per stall — indoor uses the REAL plate area
+  // (ramp + cores + columns included), the honest garage-design sqft/stall figure
   const moduleAreaPerStall = S.params.stallW * (S.params.stallD + S.params.aisle / 2);
-  $('#mEff').textContent = total ? Math.round(U.A(moduleAreaPerStall)).toLocaleString() : '—';
+  $('#mEff').textContent = total
+    ? Math.round(U.A(gar ? gar.floorArea / Math.max(gar.perFloor, 1) : moduleAreaPerStall)).toLocaleString() : '—';
 
-  // coverage = parking area / site
-  const parkArea = total * moduleAreaPerStall;
+  // coverage = parking area / site (indoor: the deck footprint = building coverage)
+  const parkArea = gar ? gar.floorArea : total * moduleAreaPerStall;
   $('#mCover').textContent = (siteArea && total) ? Math.round(parkArea / siteArea * 100) + '%' : '—';
 
   // PARKING DEMAND — the drawn massing (use × GFA) requires N spaces; show provided vs required
@@ -2811,7 +2855,7 @@ function serialize() {
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, parcelDev: S.parcelDev, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
-      connectors: S.solution.connectors, accessAisles: S.solution.accessAisles, unreachable: S.solution.unreachable } : null,
+      connectors: S.solution.connectors, accessAisles: S.solution.accessAisles, unreachable: S.solution.unreachable, garage: S.solution.garage } : null,
     site: S.site, siteForm: getSiteForm(),
   };
 }
@@ -2874,6 +2918,13 @@ function syncInputs() {
   $('#pMaxGap').value = round2(U.L(S.params.maxRunGap || 9));
   $('#pMaxRun').value = S.params.maxRun > 0 ? S.params.maxRun : 12;
   $('#cW').value = round2(U.L(S.params.compactW || 7.5));
+  $('#pIndoor').value = S.params.indoor ? '1' : '0';
+  $('#pIndAbove').value = S.params.indAbove || 3;
+  $('#pIndBelow').value = S.params.indBelow || 0;
+  $('#pIndFH').value = round2(U.L(S.params.indFH || 11));
+  $('#pIndCol').value = round2(U.L(S.params.indColSp || 27));
+  $('#pIndSlope').value = S.params.indSlope || 6;
+  document.querySelectorAll('.indoorRow').forEach(el => el.style.display = S.params.indoor ? '' : 'none');
   document.querySelectorAll('#accessSeg button').forEach(b => b.classList.toggle('active', b.dataset.acc === (S.params.access || 'multi')));
   document.querySelectorAll('#treesSeg button').forEach(b => b.classList.toggle('active', (b.dataset.tr === '1') === (S.layers.trees.vis !== false)));
   document.querySelectorAll('#maxRunSeg button').forEach(b => b.classList.toggle('active', (b.dataset.mr === '1') === (S.params.maxRun > 0)));
@@ -3077,6 +3128,14 @@ function exportGLTF() {
       for (let lv = 1; lv <= g.levelsBelow; lv++) box(S.site.footprint, 0.6, 'garage_deck', [0.3, 0.35, 0.45, 1], -lv * fh);
     }
   }
+  if (S.mode !== 'site' && S.solution && S.solution.garage) {   // indoor garage: deck slabs + columns + cores through the stack
+    const g = S.solution.garage, fh = g.floorHeight || 11, foot = g.deckPoly || S.boundary;
+    for (let lv = 1; lv < g.levelsAbove; lv++) box(foot, 0.6, 'garage_deck', [0.42, 0.46, 0.55, 1], lv * fh);   // grade deck = the stall plane itself
+    for (let lv = 1; lv <= g.levelsBelow; lv++) box(foot, 0.6, 'garage_deck', [0.3, 0.35, 0.45, 1], -lv * fh);
+    const colBot = -g.levelsBelow * fh, colSpan = (g.levelsAbove + g.levelsBelow) * fh || fh;
+    for (const cp of g.columns) box([{ x: cp.x - 1, y: cp.y - 1 }, { x: cp.x + 1, y: cp.y - 1 }, { x: cp.x + 1, y: cp.y + 1 }, { x: cp.x - 1, y: cp.y + 1 }], colSpan, 'building', [0.2, 0.25, 0.33, 1], colBot);
+    for (const co of (g.cores || [])) box(co, colSpan, 'building', [0.28, 0.33, 0.41, 1], colBot);
+  }
   const park = activePark();
   if (park) {
     park.stalls.forEach(s => { const c = hexToRgb01(COLORS[s.type] || COLORS.standard); flat(s.poly, 0.3, 'stall_' + s.type, [c[0], c[1], c[2], 1]); });
@@ -3264,6 +3323,13 @@ document.querySelectorAll('#maxRunSeg button').forEach(b => b.onclick = () => {
 });
 // target only re-validates (no re-solve needed — it doesn't change the layout)
 $('#pTarget').addEventListener('input', () => { readParams(); updateMetrics(); draw(); });
+$('#pIndoor').addEventListener('change', () => {
+  document.querySelectorAll('.indoorRow').forEach(el => el.style.display = $('#pIndoor').value === '1' ? '' : 'none');
+  readParams();
+  if (S.boundary.length >= 3) doSolve();
+});
+['#pIndAbove', '#pIndBelow', '#pIndFH', '#pIndCol', '#pIndSlope'].forEach(s =>
+  $(s).addEventListener('change', () => { readParams(); if (S.params.indoor && S.solution) doSolve(); }));
 // live params -> re-solve on change (cheap enough). Any param tweak clears a manual grid-drag (fresh layout).
 ['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { S.gridShift = null; S.aisleEdits = null; if (S.solution) doSolve(); }));
 // CHANGE ROW AXIS — cycle the circulation direction (like TestFit's Row-axis change); the whole lot re-packs cleanly

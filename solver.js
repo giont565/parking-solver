@@ -1168,6 +1168,71 @@ function structuredDeck(footprint, p, entrances) {
   return { stalls, aisles: deck.aisles, ramp, columns, perFloor: stalls.length, theta: th };
 }
 
+// INDOOR MULTI-LEVEL GARAGE (parking mode): the drawn boundary IS the building
+// floor plate. Pass 1 packs to find the deck orientation; in that frame we place
+// a code-sized express ramp (run = floor-to-floor × slope 1:N + blend), two egress
+// stair cores at opposite corners, and a structural column grid. Pass 2 re-packs
+// with ramp+cores as obstacles (angle pinned to pass 1) so the drive aisles route
+// around them; stalls a column lands on are dropped — an honest per-floor count.
+function indoorGarage(input) {
+  const ind = input.indoor || {};
+  const above = Math.max(1, ind.levelsAbove || 1), below = Math.max(0, ind.levelsBelow || 0);
+  const levels = above + below;
+  const fh = ind.floorH || 11, slope = ind.slope || 6, colSp = ind.colSp || 27;
+  const pass1 = solve(input);
+  if (!pass1) return null;
+  const th = pass1.theta || 0, boundary = input.boundary, c = centroid(boundary);
+  const run = { x: Math.cos(th), y: Math.sin(th) }, pd = { x: -Math.sin(th), y: Math.cos(th) };
+  const toLocal = pt => ({ r: (pt.x - c.x) * run.x + (pt.y - c.y) * run.y, q: (pt.x - c.x) * pd.x + (pt.y - c.y) * pd.y });
+  const toWorld = (r, q) => ({ x: c.x + r * run.x + q * pd.x, y: c.y + r * run.y + q * pd.y });
+  const fl = boundary.map(toLocal);
+  const minR = Math.min(...fl.map(p => p.r)), maxR = Math.max(...fl.map(p => p.r));
+  const minQ = Math.min(...fl.map(p => p.q)), maxQ = Math.max(...fl.map(p => p.q));
+  const rect = (r0, q0, r1, q1) => [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
+
+  // EXPRESS RAMP — only when decks must connect (≥2 levels); single grade-level deck needs none.
+  let ramp = null;
+  if (levels >= 2) {
+    const rampW = Math.max(input.params.aisle || 24, 18);
+    const rampLen = Math.min(fh * slope + 12, Math.max(maxR - minR, 1) * 0.9);
+    const qMid = (minQ + maxQ) / 2;
+    ramp = rect(minR, qMid - rampW / 2, minR + rampLen, qMid + rampW / 2);
+  }
+
+  // EGRESS CORES — two 12×20ft stair/elevator cores at opposite corners (two-exit rule);
+  // a core that doesn't fit inside an irregular plate is skipped.
+  const cores = [];
+  for (const [r0, q0, r1, q1] of [
+    [minR + 2, minQ + 2, minR + 22, minQ + 14],
+    [maxR - 22, maxQ - 14, maxR - 2, maxQ - 2],
+  ]) {
+    const co = rect(r0, q0, r1, q1);
+    if (polyInPoly(co, boundary)) cores.push(co);
+  }
+
+  const obstacles = [].concat(input.obstacles || [], ramp ? [ramp] : [], cores);
+  const sol = solve({ ...input, obstacles, params: { ...input.params, orient: th } });
+  if (!sol) return null;
+
+  // COLUMN GRID — 2×2ft posts on the structural grid in the deck frame.
+  const columns = [];
+  for (let r = minR + colSp / 2; r < maxR; r += colSp)
+    for (let q = minQ + colSp / 2; q < maxQ; q += colSp) {
+      const w = toWorld(r, q);
+      if (pointInPoly(w, boundary)) columns.push(w);
+    }
+  const colSq = p => [{ x: p.x - 1, y: p.y - 1 }, { x: p.x + 1, y: p.y - 1 }, { x: p.x + 1, y: p.y + 1 }, { x: p.x - 1, y: p.y + 1 }];
+  sol.stalls = sol.stalls.filter(s => !columns.some(cp => polyOverlap(s.poly, colSq(cp))));
+  sol.count = sol.stalls.length;
+
+  sol.garage = {
+    indoor: true, ramp, cores, columns, theta: th,
+    levelsAbove: above, levelsBelow: below, floorHeight: fh,
+    perFloor: sol.stalls.length, deckPoly: boundary, floorArea: polyArea(boundary),
+  };
+  return sol;
+}
+
 // TOWNHOME SUBDIVISION: lay rows of townhouse lots inside the buildable envelope, aligned to its
 // longest edge — double-loaded bands (access drive + two back-to-back rows). Returns the unit
 // rectangles (world coords) actually fitting inside the parcel. A real lot count, not a GFA estimate.
@@ -1717,7 +1782,7 @@ function solveSite(input) {
 /* ------------------------------- exports --------------------------------- */
 global.PS = {
   solveSite, buildableEnvelope, polyScaleAbout, clipHP,
-  solve, packAtAngle, tileStallsAlongSpine, buildCirculation, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
+  solve, indoorGarage, packAtAngle, tileStallsAlongSpine, buildCirculation, assignTypes, adaRequired, computeFinancials, inwardEdgeNormal,
   polyArea, centroid, bbox, pointInPoly, polyInPoly, polyOverlap,
   ANGLE_PRESETS,
 };
