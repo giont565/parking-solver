@@ -34,6 +34,7 @@ const S = {
   parcels: null, activeParcel: 0, parcelDev: null, splitPt: null,  // subdivision: sub-parcels (parcelDev[i] = each parcel's saved development → master plan keeps them all)
   offsetSpaces: [],        // TestFit-style editable offset spaces {line,width,anchor,program}; each owns a building/obstacle host kept in sync
   selOffset: null, dragOffset: null,   // selected offset space + active drag {oi, kind:'vtx'|'width'|'body', ...}
+  ponds: [],               // detention/retention pond polygons — also pushed into S.obstacles (parking avoids them), rendered blue + counted
   draft: null,             // in-progress polygon points
   draftKind: null,         // 'boundary'|'building'|'obstacle'
   hoverWorld: null,
@@ -522,14 +523,19 @@ function draw() {
   // internal roads (user-drawn) — drawn as a STROKED centre-line with round joins/caps so bends are smooth
   // and continuous (curb edge under + asphalt + dashed centre stripe). Looks like a real road, not box segments.
   drawRoads();
-  // obstacles (offset-space exclusion hosts are skipped — they render as rounded "spaces" below)
-  const _ofsObs = new Set(S.offsetSpaces.filter(s => s.program === 'exclusion').map(s => s.host));
+  // obstacles (offset-space exclusion/easement hosts skipped — rendered as rounded "spaces" below).
+  // detention ponds (also in S.obstacles) render BLUE with a 💧 instead of the red exclusion look.
+  const _ofsObs = new Set(S.offsetSpaces.filter(s => s.program !== 'building').map(s => s.host));
+  const _ponds = new Set(S.ponds || []);
   for (const o of (S.layers.obstacle.vis ? S.obstacles : [])) {
     if (_ofsObs.has(o)) continue;
     pathPoly(o, true);
-    ctx.fillStyle = 'rgba(127,29,29,.4)'; ctx.fill();
-    ctx.lineWidth = 1.5; ctx.strokeStyle = '#ef4444'; ctx.stroke();
-    hatch(o, '#ef4444', .35);
+    if (_ponds.has(o)) {
+      ctx.fillStyle = 'rgba(37,99,235,.42)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#3b82f6'; ctx.stroke();
+      const c = PS.centroid(o), s = toScreen(c); ctx.fillStyle = 'rgba(219,234,254,.95)'; ctx.font = '13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('💧', s.x, s.y);
+    } else {
+      ctx.fillStyle = 'rgba(127,29,29,.4)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = '#ef4444'; ctx.stroke(); hatch(o, '#ef4444', .35);
+    }
   }
   if (S.tool === 'select' && !S.is3d && S.layers.obstacle.vis) {   // obstacle corner handles (drag corner / edge / whole to adjust)
     for (let oi = 0; oi < (S.obstacles || []).length; oi++) {
@@ -1552,6 +1558,48 @@ async function autoFetchTerrain() {
   } catch (e) {
     toast('抓地形失敗（' + (e.message || '網路/服務') + '）— 可改手動填四角標高');
   } finally { if (btn) { btn.disabled = false; btn.textContent = '⛰️ 自動抓真實地形 → 算挖填方'; } }
+}
+// elevation at a point from the fetched terrain grid (0 if none) — used to drain ponds to low ground
+function pondGroundZ(x, y) {
+  const T = S._ewTerrain; if (!T || S.boundary.length < 3) return 0;
+  const bb = PS.bbox(S.boundary), dx = Math.max(bb.maxX - bb.minX, 1), dy = Math.max(bb.maxY - bb.minY, 1);
+  const fx = Math.min(T.n - 1.001, Math.max(0, (x - bb.minX) / dx * (T.n - 1))), fy = Math.min(T.n - 1.001, Math.max(0, (y - bb.minY) / dy * (T.n - 1)));
+  const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy, z = (i, j) => T.z[j * T.n + i];
+  return (z(ix, iy) * (1 - tx) + z(ix + 1, iy) * tx) * (1 - ty) + (z(ix, iy + 1) * (1 - tx) + z(ix + 1, iy + 1) * tx) * ty;
+}
+// RETENTION POND auto-placement: size a detention pond from the site's impervious area, drop it on the
+// lowest open ground that fits + clears the buildings, register as an obstacle (parking avoids it),
+// track in S.ponds (blue render + count). Draggable afterwards via the obstacle handles.
+function autoRetentionPond() {
+  if (S.boundary.length < 3) { toast('先畫基地'); return; }
+  const park = activePark();
+  let imperv = 0;
+  if (park && park.stalls) imperv += park.stalls.length * S.params.stallW * (S.params.stallD + S.params.aisle / 2);
+  S.buildings.forEach(b => { if (!b._ofs) imperv += PS.polyArea(b.poly); });
+  if (S.mode === 'site' && S.site && S.site.footprint && S.site.footprint.length >= 3) imperv += PS.polyArea(S.site.footprint);
+  const siteA = PS.polyArea(S.boundary);
+  if (imperv <= 0) imperv = siteA * 0.5;
+  let reqArea = Math.min(Math.max(imperv * 0.06, 400), siteA * 0.35);   // rough detention footprint (~6% of impervious)
+  const bb = PS.bbox(S.boundary);
+  const blockers = S.buildings.map(b => b.poly).concat(S.ponds || []).concat(S.mode === 'site' && S.site && S.site.footprint ? [S.site.footprint] : []);
+  let best = null;
+  for (let tries = 0; tries < 4 && !best; tries++) {
+    const side = Math.sqrt(reqArea), cands = [];
+    for (let cy = bb.minY + side / 2; cy <= bb.maxY - side / 2; cy += Math.max(side / 2, 12))
+      for (let cx = bb.minX + side / 2; cx <= bb.maxX - side / 2; cx += Math.max(side / 2, 12)) {
+        const sq = [{ x: cx - side / 2, y: cy - side / 2 }, { x: cx + side / 2, y: cy - side / 2 }, { x: cx + side / 2, y: cy + side / 2 }, { x: cx - side / 2, y: cy + side / 2 }];
+        if (!sq.every(p => PS.pointInPoly(p, S.boundary))) continue;
+        if (blockers.some(b => PS.polyOverlap(sq, b))) continue;
+        cands.push({ sq, z: pondGroundZ(cx, cy) });
+      }
+    if (cands.length) { cands.sort((a, b) => a.z - b.z); best = cands[0]; }   // lowest ground = natural drainage
+    else reqArea *= 0.6;                                                       // too tight → shrink and retry
+  }
+  if (!best) { toast('找不到放滯洪池的空地（基地太滿）'); return; }
+  S.obstacles.push(best.sq); (S.ponds = S.ponds || []).push(best.sq);
+  resolveActive(); draw(); commit();
+  const aSF = PS.polyArea(best.sq), vol = Math.round(aSF * 4 / 27);            // ~4 ft depth → cubic yards
+  toast(`已配置滯洪池 ${Math.round(U.A(aSF)).toLocaleString()} ${U.au()}（估蓄洪 ~${vol.toLocaleString()} yd³）· 可拖動微調`);
 }
 function drawEarthwork() {                       // cut = warm/red (above pad), fill = cool/blue (below pad)
   if (!S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || !S._ewCache) return;   // shows over the real map too (auto-terrain is fetched in map mode)
@@ -2749,12 +2797,14 @@ function serialize() {
   // offset-space hosts live inside S.buildings / S.obstacles; exclude them here and re-derive on load
   // (their geometry comes from {line,width,anchor}), so we don't double-store the band.
   const ofsBuild = new Set(S.offsetSpaces.filter(s => s.program === 'building').map(s => s.host));
-  const ofsObs = new Set(S.offsetSpaces.filter(s => s.program === 'exclusion').map(s => s.host));
+  const ofsObs = new Set(S.offsetSpaces.filter(s => s.program !== 'building').map(s => s.host));
+  const pondSet = new Set(S.ponds || []);
   return {
     mode: S.mode,
-    boundary: S.boundary, buildings: S.buildings.filter(b => !ofsBuild.has(b)), obstacles: S.obstacles.filter(o => !ofsObs.has(o)),
+    boundary: S.boundary, buildings: S.buildings.filter(b => !ofsBuild.has(b)), obstacles: S.obstacles.filter(o => !ofsObs.has(o) && !pondSet.has(o)),
     roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
     offsetSpaces: S.offsetSpaces.map(s => ({ line: s.line, width: s.width, anchor: s.anchor, program: s.program })),
+    ponds: (S.ponds || []).map(p => p.map(q => ({ x: q.x, y: q.y }))),
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, parcelDev: S.parcelDev, edgeSetback: S.edgeSetback,
     solution: S.solution ? { stalls: S.solution.stalls, aisles: S.solution.aisles, metrics: S.solution.metrics, theta: S.solution.theta,
@@ -2777,6 +2827,9 @@ function deserialize(d) {
     else { const arr = offsetBand(sp.line, sp.width, sp.anchor); S.obstacles.push(arr); sp.host = arr; }
     S.offsetSpaces.push(sp);
   });
+  // re-create detention ponds (also live in S.obstacles by reference, like offset hosts)
+  S.ponds = [];
+  (d.ponds || []).forEach(p => { const arr = p.map(q => ({ x: q.x, y: q.y })); S.obstacles.push(arr); S.ponds.push(arr); });
   Object.assign(S.params, d.params || {}); Object.assign(S.opts, d.opts || {});
   S.solution = d.solution || null; S.site = d.site || null; S.selStall = null; S.selBuilding = null;
   syncInputs(); setSiteForm(d.siteForm); updateUxSum();
@@ -3108,7 +3161,7 @@ $('#btnClear').onclick = () => {
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
   S.measures = []; S.measureStart = null; S.edgeSetback = {}; S.selEdge = null;
   S.offsetSpaces = []; S.selOffset = null; S.dragOffset = null; hideOffsetPopup();
-  S._ewTerrain = null; S._ewCache = null;
+  S.ponds = []; S._ewTerrain = null; S._ewCache = null;
   S.mode === 'site' ? updateSiteMetrics() : updateMetrics();
   if (S.mapMode) draw(); else fitView();
   commit();
@@ -3539,6 +3592,7 @@ $('#sParkAngle').addEventListener('change', () => { S.siteParkAngle = +$('#sPark
 ['#ePad', '#eCutC', '#eFillC', '#eHaulC'].forEach(s => { const el = $(s); if (el) el.addEventListener('input', computeEarthwork); });
 if ($('#ePadBal')) $('#ePadBal').onclick = () => { computeEarthwork(); $('#ePad').value = (S._ewBalance || 0).toFixed(1); computeEarthwork(); toast('整平高設為挖填平衡點（免外運）'); };
 if ($('#ewAuto')) $('#ewAuto').onclick = autoFetchTerrain;
+if ($('#ewPond')) $('#ewPond').onclick = autoRetentionPond;
 $('#sParkType').addEventListener('change', () => {
   const deck = ['structured', 'wrap'].includes($('#sParkType').value);   // both stack parking decks → show level controls
   ['#rowParkLevels', '#rowParkBelow', '#rowStructEff', '#parkTypeHint'].forEach(id => $(id).style.display = deck ? '' : 'none');
