@@ -542,6 +542,7 @@ function draw() {
   // landscape trees (over parking/buildings, under markers)
   drawFlowOverlay();
   drawEarthwork();
+  drawContours();
   drawTrees();
   // entrances
   if (S.layers.entrance.vis) for (const e of S.entrances) drawEntrance(e);
@@ -1524,7 +1525,7 @@ async function autoFetchTerrain() {
   const btn = $('#ewAuto');
   if (!S.mapMode || !S.geo.set) { toast('請先切「地圖」模式並把基地放到真實位置，再自動抓地形'); return; }
   if (S.boundary.length < 3) { toast('先畫基地邊界'); return; }
-  const N = 6;                                     // 6×6 = 36-point elevation grid (one API request)
+  const N = 9;                                     // 9×9 = 81-point elevation grid (one request; <100 cap; finer = better contours)
   const bb = PS.bbox(S.boundary), dx = bb.maxX - bb.minX, dy = bb.maxY - bb.minY;
   const locs = [];
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
@@ -1553,13 +1554,43 @@ async function autoFetchTerrain() {
   } finally { if (btn) { btn.disabled = false; btn.textContent = '⛰️ 自動抓真實地形 → 算挖填方'; } }
 }
 function drawEarthwork() {                       // cut = warm/red (above pad), fill = cool/blue (below pad)
-  if (!S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || S.mapMode || !S._ewCache) return;
+  if (!S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || !S._ewCache) return;   // shows over the real map too (auto-terrain is fetched in map mode)
   const f = S._ewCache; if (!f.cells.length) return;
   const a = toScreen({ x: 0, y: 0 }), b = toScreen({ x: 1, y: 0 }), px = Math.max(2, Math.hypot(b.x - a.x, b.y - a.y) * f.cell);
   ctx.save(); pathPoly(S.boundary, true); ctx.clip();
   for (const c of f.cells) { const s = toScreen(c), t = Math.min(1, Math.abs(c.d) / f.max);
     ctx.fillStyle = c.d >= 0 ? `rgba(220,38,38,${(0.08 + 0.5 * t).toFixed(2)})` : `rgba(37,99,235,${(0.08 + 0.5 * t).toFixed(2)})`;
     ctx.fillRect(s.x - px / 2, s.y - px / 2, px + 1, px + 1); }
+  ctx.restore();
+}
+// CONTOUR LINES from the fetched real-elevation grid (marching squares). Drawn when the earthwork
+// layer is on and a real terrain has been fetched — the "等高線" view of the auto-grabbed topography.
+function drawContours() {
+  const T = S._ewTerrain;
+  if (!T || !S.layers.earthwork || !S.layers.earthwork.vis || S.is3d || S.boundary.length < 3) return;
+  const bb = PS.bbox(S.boundary), n = T.n, dx = (bb.maxX - bb.minX) / (n - 1), dy = (bb.maxY - bb.minY) / (n - 1);
+  const lo = Math.min(...T.z), hi = Math.max(...T.z); if (hi - lo < 0.5) return;
+  const step = Math.max(1, Math.round((hi - lo) / 8));      // ~8 contour bands
+  const gx = i => bb.minX + i * dx, gy = j => bb.minY + j * dy, gz = (i, j) => T.z[j * n + i];
+  ctx.save(); pathPoly(S.boundary, true); ctx.clip();
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(120,90,40,.55)'; ctx.font = '9px system-ui'; ctx.fillStyle = 'rgba(146,110,50,.95)';
+  for (let L = Math.ceil(lo / step) * step; L < hi; L += step) {
+    let labelled = false;
+    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+      const c = [gz(i, j), gz(i + 1, j), gz(i + 1, j + 1), gz(i, j + 1)];          // CCW corners of the cell
+      const pt = [{ x: gx(i), y: gy(j) }, { x: gx(i + 1), y: gy(j) }, { x: gx(i + 1), y: gy(j + 1) }, { x: gx(i), y: gy(j + 1) }];
+      const crossings = [];
+      for (let e = 0; e < 4; e++) {                                                // each cell edge: does L cross it?
+        const a = c[e], b = c[(e + 1) % 4];
+        if ((a < L) !== (b < L)) { const t = (L - a) / (b - a); crossings.push({ x: pt[e].x + t * (pt[(e + 1) % 4].x - pt[e].x), y: pt[e].y + t * (pt[(e + 1) % 4].y - pt[e].y) }); }
+      }
+      if (crossings.length >= 2) {
+        const s0 = toScreen(crossings[0]), s1 = toScreen(crossings[1]);
+        ctx.beginPath(); ctx.moveTo(s0.x, s0.y); ctx.lineTo(s1.x, s1.y); ctx.stroke();
+        if (!labelled && PS.pointInPoly(crossings[0], S.boundary)) { ctx.fillText(Math.round(L) + "'", s0.x + 2, s0.y - 2); labelled = true; }
+      }
+    }
+  }
   ctx.restore();
 }
 function drawTrees() {
