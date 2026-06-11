@@ -2486,7 +2486,10 @@ function finishDraft() {
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
   if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; createOffsetSpace(poly); return; }   // path drawn → live-editable offset space
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
-    msg = polySelfIntersects(poly) ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成，按「自動排車位」'; }
+    const bad = polySelfIntersects(poly);
+    msg = bad ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成 — 選開發型態一鍵生成';
+    if (!bad && (!S.parcels || S.parcels.length < 2)) setTimeout(showConfigurator, 120);   // TestFit-style: prompt a configurator → one-click generate
+  }
   else if (S.draftKind === 'building') {
     // a smaller shape drawn INSIDE an existing building becomes its void (courtyard)
     const host = S.buildings.find(b => PS.pointInPoly(PS.centroid(poly), b.poly) && PS.polyArea(poly) < PS.polyArea(b.poly));
@@ -3821,6 +3824,38 @@ function openMetesModal() {
   };
 }
 function openModal(title, html) { $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html; $('#modal').classList.add('show'); }
+// CONFIGURATOR (TestFit-style): after drawing a boundary, prompt a development typology → one-click
+// generate the whole scheme. Routes to the existing parking / site generators (no new engine).
+function showConfigurator() {
+  if (S.boundary.length < 3) return;
+  const opts = [
+    ['parking', '🅿️ 停車場', '純地面停車排版'],
+    ['multifamily', '🏢 多戶住宅', 'podium / 環繞車庫 + 停車'],
+    ['tower', '🏙️ 高層塔樓', '塔樓 + 結構車庫平台'],
+    ['garden', '🌳 花園公寓', '低層多棟 + 地面停車'],
+    ['singlefamily', '🏘️ 連棟/單戶', '排屋細分 + 自帶車位'],
+    ['mixeduse', '🏬 複合用途', '底層零售 + 樓上住宅'],
+    ['office', '🏢 辦公', '辦公量體 + 停車'],
+    ['retail', '🛒 零售中心', '主力店 + pad + 大面停車'],
+    ['industrial', '🏭 工業倉儲', '倉庫 + 卡車迴轉 + 月台'],
+    ['hotel', '🏨 旅館', '客房條型 slab'],
+    ['datacenter', '🖥️ 資料中心', '機房 + 機電中庭'],
+  ];
+  const html = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">選一個開發型態，立刻生成整個方案（之後可改參數 / 拖編輯）：</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;">'
+    + opts.map(o => `<button class="cfgBtn" data-use="${o[0]}" style="text-align:left;padding:11px 13px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:10px;cursor:pointer;">
+        <div style="font-weight:700;font-size:14px;">${o[1]}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">${o[2]}</div></button>`).join('')
+    + '</div>';
+  openModal('選擇開發型態 Configurator', html);
+  document.querySelectorAll('.cfgBtn').forEach(b => b.onclick = () => { closeModal(); runConfigurator(b.dataset.use); });
+}
+function runConfigurator(use) {
+  setTool('select');
+  if (use === 'parking') { setMode('parking'); setTimeout(doSolve, 40); toast('生成停車場方案中…'); return; }
+  setMode('site');
+  if ($('#sUse')) { $('#sUse').value = use; $('#sUse').dispatchEvent(new Event('change')); }   // applies use-specific UI + solves with the chosen type
+  toast('生成「' + (SITE_USE_LABEL[use] || use) + '」方案中…');
+}
 function closeModal() { $('#modal').classList.remove('show'); }
 $('#modalClose').onclick = closeModal;
 $('#modal').addEventListener('mousedown', e => { if (e.target.id === 'modal') closeModal(); });
