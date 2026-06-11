@@ -2130,7 +2130,7 @@ cv.addEventListener('pointermove', e => {
   }
   if (S.dragSpine) {                                 // dragging a spine end node → reshape the lane + re-tile its stalls LIVE
     const park = activePark(), sp = park && park.spines && park.spines[S.dragSpine.si];
-    if (sp) { sp.line[S.dragSpine.ni] = snap(w); retileSpine(S.dragSpine.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
+    if (sp) { sp.line[S.dragSpine.ni] = fineSnap(w); retileSpine(S.dragSpine.si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); }
     return;
   }
   if (S.dragSpineBody) {                             // move a WHOLE drive aisle (translate the line; its stalls follow)
@@ -2316,6 +2316,9 @@ function snap(w) {                   // 1-ft snap when zoomed in
   if (S.view.scale > 1.2) return { x: Math.round(w.x), y: Math.round(w.y) };
   return w;
 }
+// Fine snap for drive-aisle fine-tuning — 0.25 ft steps so dragging a lane feels SMOOTH/continuous
+// (the 1-ft snap above made aisle adjustment feel rigid / step-jumpy — no room for micro-adjust).
+function fineSnap(w) { return { x: Math.round(w.x * 4) / 4, y: Math.round(w.y * 4) / 4 }; }
 
 // True if any two non-adjacent edges of the closed polygon cross — a self-intersecting
 // ("bowtie") parcel. The solver survives it without crashing, but the layout comes out garbled,
@@ -2404,6 +2407,25 @@ window.addEventListener('keydown', e => {
     } else if (S.selStall && S.solution) {
       const i = S.solution.stalls.indexOf(S.selStall);
       if (i >= 0) { S.solution.stalls.splice(i, 1); S.selStall = null; updateMetrics(); draw(); commit(); }
+    }
+  }
+  // Arrow-key FINE NUDGE for the selected drive aisle / offset space — micro-adjust without dragging
+  // (0.5 ft per tap, Shift = 2 ft). Gives the "fine-tune room" TestFit-style aisle editing needs.
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    const step = e.shiftKey ? 2 : 0.5;
+    const d = { ArrowUp:[0,-step], ArrowDown:[0,step], ArrowLeft:[-step,0], ArrowRight:[step,0] }[e.key];
+    const park = activePark();
+    if (S.selAisle != null && park && park.spines && park.spines[S.selAisle]) {
+      e.preventDefault();
+      const sp = park.spines[S.selAisle]; sp.line = sp.line.map(p => ({ x: p.x + d[0], y: p.y + d[1] }));
+      retileSpine(S.selAisle); reflowAfterEdit(); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit();
+      return;
+    }
+    if (S.selOffset != null && S.offsetSpaces[S.selOffset]) {
+      e.preventDefault();
+      const o = S.offsetSpaces[S.selOffset]; o.line = o.line.map(p => ({ x: p.x + d[0], y: p.y + d[1] }));
+      rebuildOffsetSpace(o); resolveActive(); draw(); commit();
+      return;
     }
   }
   const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', f:'offsetpath', m:'measure', h:'pan' };
