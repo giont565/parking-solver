@@ -1503,9 +1503,9 @@ function drawFlowOverlay() {
 // on a grid, and tally cut (ground above pad) vs fill (below) volumes → earthwork cost. Balance pad = mean ground.
 function computeEarthwork() {
   const out = $('#ewResult'); if (!out) return;
-  if (S.boundary.length < 3) { out.textContent = '先畫基地。'; S._ewCache = null; return; }
+  if (S.boundary.length < 3) { out.textContent = '先畫基地。'; S._ewCache = null; S._ewStats = null; return; }
   const NW = +$('#eNW').value, NE = +$('#eNE').value, SW = +$('#eSW').value, SE = +$('#eSE').value;
-  if (!S._ewTerrain && !NW && !NE && !SW && !SE) { out.textContent = '按「自動抓真實地形」或手動輸入四角標高。'; S._ewCache = null; return; }
+  if (!S._ewTerrain && !NW && !NE && !SW && !SE) { out.textContent = '按「自動抓真實地形」或手動輸入四角標高。'; S._ewCache = null; S._ewStats = null; return; }
   const pad = +$('#ePad').value, cutC = +$('#eCutC').value, fillC = +$('#eFillC').value, haulC = +$('#eHaulC').value;
   const bb = PS.bbox(S.boundary), CELL = 5, dx = Math.max(bb.maxX - bb.minX, 1), dy = Math.max(bb.maxY - bb.minY, 1);
   const cellA = CELL * CELL; let cut = 0, fill = 0, gSum = 0, gA = 0; const cells = [];
@@ -1530,10 +1530,12 @@ function computeEarthwork() {
   }
   const cutY = cut / 27, fillY = fill / 27, net = cutY - fillY, balance = gA ? gSum / gA : 0;   // cubic yards
   S._ewBalance = balance;
+  S._ewStats = { cutY, fillY, net };                       // surfaced in the tabulation bar (EARTHWORK col)
   const cost = cutY * cutC + fillY * fillC + Math.abs(net) * haulC;
   const fmt = n => Math.round(n).toLocaleString();
   out.innerHTML = `挖 <b>${fmt(cutY)}</b> yd³ ・ 填 <b>${fmt(fillY)}</b> yd³ ・ ${net >= 0 ? '外運 export' : '進土 import'} <b>${fmt(Math.abs(net))}</b> yd³<br>土方成本約 <b>$${fmt(cost)}</b> ・ 平衡整平高 ≈ <b>${balance.toFixed(1)} ft</b>（挖填相抵、免外運）`;
   S._ewCache = { cells, max: Math.max(1, ...cells.map(c => Math.abs(c.d))), cell: CELL };
+  updateTabBar();                                          // surface the EARTHWORK column immediately
   draw();
 }
 // AUTOMATIC CUT & FILL: fetch a real elevation grid for the geolocated parcel from OpenTopoData
@@ -1774,6 +1776,23 @@ function showErrors() {
 }
 
 /* --------------------- TestFit-style tabulation bar ---------------------- */
+// AMENITY DECK — the podium-roof terrace TestFit colours green: a tower's podium
+// roof outside the tower plate, or a wrap's courtyard on top of the garage core.
+function amenityDeck() {
+  if (S.mode !== 'site' || !S.site) return null;
+  const s = S.site, fh = (s.garage && s.garage.floorHeight) || 11;
+  if (s.tower && s.tower.podium) {
+    const z = s.tower.podiumLevels * fh;
+    return { poly: s.tower.podium, voids: [s.tower.plate], z, area: Math.max(0, PS.polyArea(s.tower.podium) - PS.polyArea(s.tower.plate)) };
+  }
+  if (s.isWrap && s.wrapCore && s.garage) {
+    const z = s.garage.levelsAbove * fh;
+    if (z >= s.height) return null;                      // core as tall as the ring → no visible courtyard deck
+    return { poly: s.wrapCore, voids: null, z, area: PS.polyArea(s.wrapCore) };
+  }
+  return null;
+}
+
 function updateTabBar() {
   const bar = $('#tabBar');
   const area = S.boundary.length >= 3 ? PS.polyArea(S.boundary) : 0;
@@ -1803,15 +1822,25 @@ function updateTabBar() {
   }
   if (S.mode === 'site' && S.site) {
     const s = S.site;
-    html += col('BUILDING 建築', [['GFA', Math.round(U.A(s.gfa)).toLocaleString()],
+    const bkvs = [['GFA', Math.round(U.A(s.gfa)).toLocaleString()],
       [s.residential ? '戶數' : 'NRSF', s.residential ? s.units : Math.round(U.A(s.nrsf)).toLocaleString()],
-      ['停車', `${s.parkingProvided}/${s.parkingRequired}`], ['投報率', s.fin.yieldOnCost.toFixed(1) + '%']]);
+      ['停車', `${s.parkingProvided}/${s.parkingRequired}`], ['投報率', s.fin.yieldOnCost.toFixed(1) + '%']];
+    const amen = amenityDeck();               // podium-roof amenity terrace (tower / wrap)
+    if (amen) bkvs.push(['🌿 露臺', `${Math.round(U.A(amen.area)).toLocaleString()} ${U.au()}`]);
+    html += col('BUILDING 建築', bkvs);
     if (s.residential) {                      // unit-level tabulation: DU/AC · Beds · Baths
       let beds = 0, baths = 0;
       s.unitsByType.forEach(u => { beds += (BEDS[u.type] || 0) * u.count; baths += (BATHS[u.type] || 0) * u.count; });
       html += col('UNITS 戶量', [['DU/ac', (s.units / s.acres).toFixed(1)],
         ['🛏 Beds', beds.toLocaleString()], ['🛁 Baths', baths.toLocaleString()]]);
     }
+  }
+  if (S._ewStats || (S.ponds && S.ponds.length)) {       // EARTHWORK — cut/fill + soil balance + retention ponds
+    const ew = S._ewStats, vol = y => U.metric() ? `${Math.round(y * 0.7646).toLocaleString()} m³` : `${Math.round(y).toLocaleString()} yd³`;
+    const kvs = ew ? [['挖 Cut', vol(ew.cutY)], ['填 Fill', vol(ew.fillY)],
+      [ew.net >= 0 ? '外運 Export' : '進土 Import', vol(Math.abs(ew.net))]] : [];
+    kvs.push(['滯洪池 Ponds', (S.ponds || []).length]);
+    html += col('EARTHWORK 土方', kvs);
   }
   const errs = computeErrors();
   const hasErr = errs.some(e => e.lv === 'error');
@@ -1987,6 +2016,14 @@ function draw3D() {
       } else {
         pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, S.site.footVoids, podium, S.site.structured ? 0.4 : null);
       }
+    }
+    const amen = amenityDeck();                  // AMENITY DECK — green podium-roof terrace (TestFit's green deck)
+    if (amen) faces.push({ pts: amen.poly.map(p => ({ x: p.x, y: p.y, z: amen.z + 0.08 })), fill: 'rgba(74,222,128,.55)',
+      stroke: 'rgba(34,197,94,.9)', depth: baseDepthArr(amen.poly), z: amen.z + 0.08 });
+    // BUILDABLE ENVELOPE GHOST — the zoning max-height volume as a translucent box (TestFit's blue ghost)
+    if (S.site.envelope && S.site.envelope.length >= 3) {
+      const zh = U.Lr(+$('#zHeight').value) || 0;
+      if (zh > 2) pushBox(faces, S.site.envelope, zh, '#60a5fa', null, true, null, 0, 0.13);
     }
   }
 
@@ -3136,6 +3173,12 @@ function exportGLTF() {
     for (const cp of g.columns) box([{ x: cp.x - 1, y: cp.y - 1 }, { x: cp.x + 1, y: cp.y - 1 }, { x: cp.x + 1, y: cp.y + 1 }, { x: cp.x - 1, y: cp.y + 1 }], colSpan, 'building', [0.2, 0.25, 0.33, 1], colBot);
     for (const co of (g.cores || [])) box(co, colSpan, 'building', [0.28, 0.33, 0.41, 1], colBot);
   }
+  const amen = amenityDeck();                                   // green amenity terrace + zoning-envelope ghost (mirror the 3D view)
+  if (amen) flat(amen.poly, amen.z + 0.1, 'amenity', [0.29, 0.87, 0.5, 1]);
+  if (S.mode === 'site' && S.site && S.site.envelope && S.site.envelope.length >= 3) {
+    const zh = U.Lr(+$('#zHeight').value) || 0;
+    if (zh > 2) box(S.site.envelope, zh, 'envelope', [0.38, 0.65, 0.98, 0.13]);
+  }
   const park = activePark();
   if (park) {
     park.stalls.forEach(s => { const c = hexToRgb01(COLORS[s.type] || COLORS.standard); flat(s.poly, 0.3, 'stall_' + s.type, [c[0], c[1], c[2], 1]); });
@@ -3158,7 +3201,8 @@ function exportGLTF() {
   groups.forEach((g, i) => {
     bufferViews.push({ buffer: 0, byteOffset: idxOff[i], byteLength: idxArrs[i].byteLength, target: 34963 });
     accessors.push({ bufferView: i + 1, componentType: 5125, count: g.indices.length, type: 'SCALAR' });
-    materials.push({ name: g.key, pbrMetallicRoughness: { baseColorFactor: g.color, metallicFactor: 0, roughnessFactor: 0.85 }, doubleSided: true });
+    materials.push({ name: g.key, pbrMetallicRoughness: { baseColorFactor: g.color, metallicFactor: 0, roughnessFactor: 0.85 },
+      doubleSided: true, ...(g.color[3] < 1 ? { alphaMode: 'BLEND' } : {}) });
     primitives.push({ attributes: { POSITION: 0 }, indices: i + 1, material: i });
   });
   const gltf = { asset: { version: '2.0', generator: 'parcelweave 城織' }, scene: 0, scenes: [{ nodes: [0] }],
