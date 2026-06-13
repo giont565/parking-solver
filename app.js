@@ -768,10 +768,9 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
   const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: sp.width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
   const others = park.stalls.filter(s => s.spine !== si);                // every OTHER aisle's stalls
   let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
-  // drop a fresh stall only if it REALLY overlaps a neighbour — shrink it ~1ft first so a normal back-to-back
-  // touch (rows from adjacent aisles meet edge-to-edge) is kept, not wrongly culled by edge-touch polyOverlap.
-  const shrink = poly => { const cx = (poly[0].x + poly[1].x + poly[2].x + poly[3].x) / 4, cy = (poly[0].y + poly[1].y + poly[2].y + poly[3].y) / 4; return poly.map(p => ({ x: cx + (p.x - cx) * 0.88, y: cy + (p.y - cy) * 0.88 })); };
-  if (avoidOverlap) fresh = fresh.filter(ns => { const ins = shrink(ns.poly); return !others.some(os => PS.polyOverlap(ins, os.poly)); });
+  // drop a fresh stall only if it REALLY overlaps a neighbour (>30% of its area) — a normal back-to-back
+  // touch (rows from adjacent aisles meet edge-to-edge, ≈0% under) is kept.
+  if (avoidOverlap) fresh = fresh.filter(ns => !others.some(os => stallUnderFrac(ns.poly, [os.poly]) > 0.30));
   fresh.forEach(s => s.spine = si);
   park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
   park.aisles[aIdx] = { poly: spineToRect(sp.line, sp.width) };          // keep the grey lane in sync
@@ -796,14 +795,27 @@ function reconnectNetwork(full) {   // full=true → rebuild ALL connectors incl
   park.connectors = full ? (clone.connectors || []).slice() : cross.concat(ramps);       // ADD → take the freshly-knit cross-aisles+ramps (connects the new aisle); MOVE → keep old cross-aisles + fresh ramps
   // drop only stalls physically sitting on a drive lane (a re-tiled lane runs its stalls across the fixed
   // cross-aisles) — can't park where cars drive. Area test (>8% under) so a stall merely grazed survives.
-  const drives = park.connectors.map(c => c.poly || c);
-  park.stalls = park.stalls.filter(s => {
-    const cand = drives.filter(d => PS.polyOverlap(s.poly, d)); if (!cand.length) return true;
-    const b = PS.bbox(s.poly); let inside = 0, under = 0;
-    for (let x = b.minX; x <= b.maxX; x += 1.5) for (let y = b.minY; y <= b.maxY; y += 1.5) { const pt = { x, y }; if (!PS.pointInPoly(pt, s.poly)) continue; inside++; if (cand.some(d => PS.pointInPoly(pt, d))) under++; }
-    return under / Math.max(inside, 1) <= 0.08;
-  });
+  // a stall may not sit on ANY drive surface — the connector network OR a drive aisle lane. In a normal
+  // (parallel-aisle) pack every stall only edge-touches its aisles (≈0% under) so all survive; but a
+  // hand-drawn lane that crosses the existing rows makes its stalls land on the perpendicular aisles —
+  // those get cleared here, killing the "車道壓車位" overlap.
+  const drives = park.connectors.map(c => c.poly || c).concat((park.aisles || []).map(a => a.poly));
+  park.stalls = park.stalls.filter(s => stallUnderFrac(s.poly, drives) <= 0.08);
   deriveSpines(park);                                  // refresh editable spines + re-tag stalls + keep single-load sides
+}
+// Fraction of a stall's area that falls inside ANY of the given drive / lane polygons (grid sample,
+// works for bent strips too). Used to drop stalls that sit ON a drive lane while keeping back-to-back
+// edge touches (≈0% under). Shared by the network re-link AND the manual-aisle clear so a hand-drawn
+// drive lane never leaves stalls overlapping it.
+function stallUnderFrac(stallPoly, regions) {
+  const cand = regions.filter(d => d && PS.polyOverlap(stallPoly, d));
+  if (!cand.length) return 0;
+  const b = PS.bbox(stallPoly); let inside = 0, under = 0;
+  for (let x = b.minX; x <= b.maxX; x += 1.5) for (let y = b.minY; y <= b.maxY; y += 1.5) {
+    const pt = { x, y }; if (!PS.pointInPoly(pt, stallPoly)) continue;
+    inside++; if (cand.some(d => PS.pointInPoly(pt, d))) under++;
+  }
+  return under / Math.max(inside, 1);
 }
 function insertSpineNode(si, w) {   // add a bend node into aisle spine si at the point on its centre-line nearest world point w
   const park = activePark(), sp = park && park.spines && park.spines[si]; if (!sp || sp.kind !== 'aisle') return false;
@@ -842,9 +854,13 @@ function addManualAisle(line) {
   park.aisles.push({ poly: spineToRect(line, width) });
   park.spines = park.spines || [];
   park.spines.push({ line: line.map(q => ({ x: q.x, y: q.y })), width, kind: 'aisle', src: idx });
+  // the new aisle is a full double-loaded MODULE (lane + a row of depth stallD on each side). Clear the
+  // EXISTING stalls inside that footprint first — otherwise the hand-drawn lane sits on top of the old grid
+  // (the "車道壓車位" overlap). Back-to-back stalls just outside the band (≈0% under) survive.
+  const moduleBand = spineToRect(line, width + 2 * S.params.stallD);
+  park.stalls = park.stalls.filter(os => stallUnderFrac(os.poly, [moduleBand]) <= 0.30);
   let fresh = PS.tileStallsAlongSpine(line, p, S.boundary, spineBlockers(), 0);   // double-loaded along the drawn line
-  const shrink = poly => { const cx = (poly[0].x + poly[1].x + poly[2].x + poly[3].x) / 4, cy = (poly[0].y + poly[1].y + poly[2].y + poly[3].y) / 4; return poly.map(q => ({ x: cx + (q.x - cx) * 0.88, y: cy + (q.y - cy) * 0.88 })); };
-  fresh = fresh.filter(ns => !park.stalls.some(os => PS.polyOverlap(shrink(ns.poly), os.poly)));   // drop only stalls that really overlap an existing one (back-to-back touch survives)
+  fresh = fresh.filter(ns => !park.stalls.some(os => stallUnderFrac(ns.poly, [os.poly]) > 0.30));   // drop a fresh stall only if it really overlaps a surviving one
   fresh.forEach(s => s.spine = idx);
   park.stalls.push(...fresh);
   reconnectNetwork(true);                                                  // FULL rebuild → knit fresh cross-aisles so the new aisle connects to the gate network
