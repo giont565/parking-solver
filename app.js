@@ -768,9 +768,9 @@ function retileSpine(si, avoidOverlap) {   // re-shape one spine — drag a node
   const p = { stallW: S.params.stallW, vpd: S.params.stallD, aisle: sp.width, setback: S.params.setback, greenBuffer: S.params.greenBuffer || 0, angle: 90 };
   const others = park.stalls.filter(s => s.spine !== si);                // every OTHER aisle's stalls
   let fresh = PS.tileStallsAlongSpine(sp.line, p, S.boundary, spineBlockers(), sp.sides || 0);
-  // drop a fresh stall only if it REALLY overlaps a neighbour (>30% of its area) — a normal back-to-back
+  // drop a fresh stall only if it REALLY overlaps a neighbour (>10% of its area) — a normal back-to-back
   // touch (rows from adjacent aisles meet edge-to-edge, ≈0% under) is kept.
-  if (avoidOverlap) fresh = fresh.filter(ns => !others.some(os => stallUnderFrac(ns.poly, [os.poly]) > 0.30));
+  if (avoidOverlap) fresh = fresh.filter(ns => stallUnderFrac(ns.poly, others.map(o => o.poly)) <= 0.10);
   fresh.forEach(s => s.spine = si);
   park.stalls = others.concat(fresh);                                    // swap out this spine's stalls
   park.aisles[aIdx] = { poly: spineToRect(sp.line, sp.width) };          // keep the grey lane in sync
@@ -854,14 +854,15 @@ function addManualAisle(line) {
   park.aisles.push({ poly: spineToRect(line, width) });
   park.spines = park.spines || [];
   park.spines.push({ line: line.map(q => ({ x: q.x, y: q.y })), width, kind: 'aisle', src: idx });
-  // the new aisle is a full double-loaded MODULE (lane + a row of depth stallD on each side). Clear the
-  // EXISTING stalls inside that footprint first — otherwise the hand-drawn lane sits on top of the old grid
-  // (the "車道壓車位" overlap). Back-to-back stalls just outside the band (≈0% under) survive.
-  const moduleBand = spineToRect(line, width + 2 * S.params.stallD);
-  park.stalls = park.stalls.filter(os => stallUnderFrac(os.poly, [moduleBand]) <= 0.30);
   let fresh = PS.tileStallsAlongSpine(line, p, S.boundary, spineBlockers(), 0);   // double-loaded along the drawn line
-  fresh = fresh.filter(ns => !park.stalls.some(os => stallUnderFrac(ns.poly, [os.poly]) > 0.30));   // drop a fresh stall only if it really overlaps a surviving one
   fresh.forEach(s => s.spine = idx);
+  // the hand-drawn module is AUTHORITATIVE in its footprint: every EXISTING stall that really overlaps a
+  // fresh stall (>10% of its area — a back-to-back edge touch is ≈0% and survives) yields and is removed,
+  // so the new angled rows never sit on top of the old grid (the "車道壓車位" overlap). Then drop any fresh
+  // that still clips a survivor (e.g. a stall from another hand-drawn aisle) so neither direction overlaps.
+  const freshPolys = fresh.map(f => f.poly);
+  park.stalls = park.stalls.filter(os => stallUnderFrac(os.poly, freshPolys) <= 0.10);
+  fresh = fresh.filter(ns => stallUnderFrac(ns.poly, park.stalls.map(o => o.poly)) <= 0.10);
   park.stalls.push(...fresh);
   reconnectNetwork(true);                                                  // FULL rebuild → knit fresh cross-aisles so the new aisle connects to the gate network
   (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
