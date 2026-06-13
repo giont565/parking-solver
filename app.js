@@ -43,8 +43,8 @@ const S = {
   selRoad: null,           // index into roadLines of the selected/editable road
   dragBldgVtx: null,       // {bi,pi} dragging a building footprint corner (massing footprint edit → parking re-packs)
   selAisle: null,          // index of the selected drive aisle (manual circulation editing)
-  dragSpine: null,         // {si,ni} dragging a drive-aisle spine end node → that aisle reshapes + stalls re-attach
-  dragSpineBody: null,     // {si,last} dragging a whole drive aisle (the line, not an end) → move the lane + stalls
+  dragSpine: null,         // {si,ni} dragging a drive-aisle spine node (any vertex) → that aisle reshapes + stalls re-attach
+  dragSpineEdge: null,     // {si,ei,last} dragging ONE segment of a drive aisle → move that edge's two endpoints (its stalls follow)
   dragBoundaryEdge: null,  // {i,last,moved} dragging a whole boundary EDGE (stretch the site)
   dragBldgEdge: null,      // {bi,ei,last} dragging a building EDGE
   dragBldgBody: null,      // {bi,last,moved} dragging a whole building (move its position)
@@ -378,6 +378,13 @@ function draw() {
         const col = conn ? '251,146,60' : '56,189,248';                   // connectors orange, drive aisles blue
         ctx.setLineDash([5, 4]); ctx.lineWidth = sel ? 2 : 1.1; ctx.strokeStyle = `rgba(${col},${sel ? .95 : .42})`;
         ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke(); ctx.setLineDash([]);
+        if (sel && !conn) {                                                // ⊕ midpoint handles on the selected aisle — grab to add a bend you drag
+          for (let i = 0; i + 1 < pts.length; i++) {
+            const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
+            ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, 6.2832); ctx.fillStyle = 'rgba(15,23,42,.7)'; ctx.fill(); ctx.lineWidth = 1.2; ctx.strokeStyle = `rgba(${col},.85)`; ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(mx - 2.3, my); ctx.lineTo(mx + 2.3, my); ctx.moveTo(mx, my - 2.3); ctx.lineTo(mx, my + 2.3); ctx.strokeStyle = `rgba(${col},.95)`; ctx.lineWidth = 1.1; ctx.stroke();   // "+"
+          }
+        }
         for (let i = 0; i < pts.length; i++) { const mid = i > 0 && i < pts.length - 1; ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, sel ? 6 : 4.5, 0, 6.2832); ctx.fillStyle = mid ? '#fbbf24' : `rgb(${col})`; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = '#0f172a'; ctx.stroke(); }   // bend nodes yellow
       }
       ctx.restore();
@@ -674,15 +681,25 @@ function spineNodeAt(w) {         // pick a draggable spine end-node near w → 
   for (let si = 0; si < park.spines.length; si++) { const ln = park.spines[si].line; for (let ni = 0; ni < ln.length; ni++) { const s = toScreen(ln[ni]); if (Math.hypot(s.x - m.x, s.y - m.y) < 14) return { si, ni }; } }
   return null;
 }
-function spineBodyAt(w) {         // pick a drive-aisle LINE (not an end node) → si, for moving the whole lane
-  const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return -1;
+function spineEdgeAt(w) {         // pick a drive-aisle/connector SEGMENT (not a node) → {si, ei} for moving that one edge
+  const park = activePark(); if (!park || !park.spines || !S.layers.parking.vis || S.layers.parking.lock) return null;
   const m = toScreen(w);
   for (let si = 0; si < park.spines.length; si++) {
     const ln = park.spines[si].line;
-    if (ln.some(n => { const s = toScreen(n); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;   // near an end → that's the node grab
-    for (let i = 0; i + 1 < ln.length; i++) if (distSegPx(m, toScreen(ln[i]), toScreen(ln[i + 1])) < 8) return si;
+    if (ln.some(n => { const s = toScreen(n); return Math.hypot(s.x - m.x, s.y - m.y) < 16; })) continue;   // near a node → that's the node grab
+    for (let i = 0; i + 1 < ln.length; i++) if (distSegPx(m, toScreen(ln[i]), toScreen(ln[i + 1])) < 8) return { si, ei: i };
   }
-  return -1;
+  return null;
+}
+function spineMidAt(w) {          // pick the midpoint "add a bend" handle on the SELECTED aisle's edge → {si, ei} or null
+  const park = activePark(); if (!park || !park.spines || S.selAisle == null || !S.layers.parking.vis || S.layers.parking.lock) return null;
+  const sp = park.spines[S.selAisle]; if (!sp || sp.kind !== 'aisle') return null;
+  const ln = sp.line, m = toScreen(w);
+  for (let i = 0; i + 1 < ln.length; i++) {
+    const a = toScreen(ln[i]), b = toScreen(ln[i + 1]);
+    if (Math.hypot((a.x + b.x) / 2 - m.x, (a.y + b.y) / 2 - m.y) < 12) return { si: S.selAisle, ei: i };
+  }
+  return null;
 }
 function boundaryEdgeAt(w) {      // pick a boundary EDGE (not a corner) → edge index i, for stretching the site
   if (!pickable('site') || S.boundary.length < 2) return -1;
@@ -752,7 +769,7 @@ function scheduleSpineRetile(si) {
   if (_spineRaf) return;
   _spineRaf = requestAnimationFrame(() => {
     _spineRaf = 0;
-    if (!(S.dragSpine || S.dragSpineBody)) return;
+    if (!(S.dragSpine || S.dragSpineEdge)) return;
     retileSpine(si); (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw();
   });
 }
@@ -801,7 +818,19 @@ function reconnectNetwork(full) {   // full=true → rebuild ALL connectors incl
   // those get cleared here, killing the "車道壓車位" overlap.
   const drives = park.connectors.map(c => c.poly || c).concat((park.aisles || []).map(a => a.poly));
   park.stalls = park.stalls.filter(s => stallUnderFrac(s.poly, drives) <= 0.08);
+  dedupeStalls(park);                                  // final safety net: no two stalls overlap (re-tiling neighbours can leave a sliver)
   deriveSpines(park);                                  // refresh editable spines + re-tag stalls + keep single-load sides
+}
+// Drop any stall that overlaps an already-kept stall by >8% of its area (a back-to-back edge touch is ≈0%
+// and survives). polyOverlap pre-filters so only genuinely-overlapping pairs get the (costlier) area sample —
+// cheap enough for the one-shot call on a manual lane edit. Guarantees zero visible stall-on-stall overlap.
+function dedupeStalls(park) {
+  if (!park || !park.stalls) return;
+  const kept = [];
+  for (const s of park.stalls) {
+    if (!kept.some(k => PS.polyOverlap(s.poly, k.poly) && stallUnderFrac(s.poly, [k.poly]) > 0.08)) kept.push(s);
+  }
+  park.stalls = kept;
 }
 // Fraction of a stall's area that falls inside ANY of the given drive / lane polygons (grid sample,
 // works for bent strips too). Used to drop stalls that sit ON a drive lane while keeping back-to-back
@@ -817,8 +846,8 @@ function stallUnderFrac(stallPoly, regions) {
   }
   return under / Math.max(inside, 1);
 }
-function insertSpineNode(si, w) {   // add a bend node into aisle spine si at the point on its centre-line nearest world point w
-  const park = activePark(), sp = park && park.spines && park.spines[si]; if (!sp || sp.kind !== 'aisle') return false;
+function insertSpineNodeAt(si, w) {   // insert a bend on aisle spine si at the point nearest w; returns the NEW node index, or -1 (no retile)
+  const park = activePark(), sp = park && park.spines && park.spines[si]; if (!sp || sp.kind !== 'aisle') return -1;
   const ln = sp.line; let best = -1, bestD = 1e9, bestPt = null;
   for (let i = 0; i + 1 < ln.length; i++) {
     const a = ln[i], b = ln[i + 1], L2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
@@ -826,9 +855,13 @@ function insertSpineNode(si, w) {   // add a bend node into aisle spine si at th
     const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t, d = Math.hypot(w.x - px, w.y - py);
     if (d < bestD) { bestD = d; best = i; bestPt = { x: px, y: py }; }
   }
-  if (best < 0 || !bestPt) return false;
-  if (Math.hypot(bestPt.x - ln[best].x, bestPt.y - ln[best].y) < 3 || Math.hypot(bestPt.x - ln[best + 1].x, bestPt.y - ln[best + 1].y) < 3) return false;   // too close to an existing node → don't make a zero-length segment
+  if (best < 0 || !bestPt) return -1;
+  if (Math.hypot(bestPt.x - ln[best].x, bestPt.y - ln[best].y) < 3 || Math.hypot(bestPt.x - ln[best + 1].x, bestPt.y - ln[best + 1].y) < 3) return -1;   // too close to an existing node → don't make a zero-length segment
   ln.splice(best + 1, 0, bestPt);                                          // new node between the two it sits between
+  return best + 1;
+}
+function insertSpineNode(si, w) {   // dblclick path: add a bend + re-tile + re-link in one shot
+  if (insertSpineNodeAt(si, w) < 0) return false;
   retileSpine(si, true); reconnectNetwork(); return true;
 }
 // ADAPTIVE RE-FLOW after a manual lane move/reshape (TestFit-style "move a road and the lot adapts"):
@@ -2253,10 +2286,12 @@ cv.addEventListener('pointerdown', e => {
       const m = toScreen(w);
       if (Math.hypot(sp.x - m.x, sp.y - m.y) < 14) { S.dragVertex = { idx: i, reflow: (S.mode === 'site' ? !!S.site : !!S.solution) }; return; }
     }
-    // SPINE NODE — grab a drive-aisle/connector end node (after boundary corners; spine nodes are mostly mid-edge)
+    // SPINE NODE — grab ANY drive-aisle/connector vertex to move that single point
     { const sn = spineNodeAt(w); if (sn) { S.dragSpine = sn; S.selAisle = sn.si; S.selStall = null; S.selRoad = null; showAislePopup(sn.si); draw(); return; } }
-    // SPINE BODY — grab the whole aisle line to MOVE the lane (both ends + its stalls follow)
-    { const sb = spineBodyAt(w); if (sb >= 0) { S.dragSpineBody = { si: sb, last: w }; S.selAisle = sb; S.selStall = null; S.selRoad = null; showAislePopup(sb); draw(); return; } }
+    // SPINE MIDPOINT HANDLE — grab the ⊕ handle on a selected aisle edge to INSERT a bend at the grab point and drag it
+    { const sm = spineMidAt(w); if (sm) { const ni = insertSpineNodeAt(sm.si, w); if (ni >= 0) { S.dragSpine = { si: sm.si, ni }; S.selAisle = sm.si; S.selStall = null; S.selRoad = null; showAislePopup(sm.si); draw(); return; } } }
+    // SPINE EDGE — grab a segment to MOVE just that one edge (both its endpoints; a straight lane moves wholesale)
+    { const se = spineEdgeAt(w); if (se) { S.dragSpineEdge = { si: se.si, ei: se.ei, last: w }; S.selAisle = se.si; S.selStall = null; S.selRoad = null; showAislePopup(se.si); draw(); return; } }
     // BOUNDARY EDGE — drag a whole edge to stretch the site (a click without a drag = the site-mode setback popup)
     { const be = boundaryEdgeAt(w); if (be >= 0) { S.dragBoundaryEdge = { i: be, last: w, moved: false, reflow: (S.mode === 'site' ? !!S.site : !!S.solution) }; return; } }
     // OFFSET SPACE BODY — grab the centre line to move the whole space (also selects it)
@@ -2349,9 +2384,14 @@ cv.addEventListener('pointermove', e => {
     if (sp) { sp.line[S.dragSpine.ni] = fineSnap(w); scheduleSpineRetile(S.dragSpine.si); }
     return;
   }
-  if (S.dragSpineBody) {                             // move a WHOLE drive aisle (translate the line; its stalls follow)
-    const park = activePark(), sp = park && park.spines && park.spines[S.dragSpineBody.si];
-    if (sp) { const d = { x: w.x - S.dragSpineBody.last.x, y: w.y - S.dragSpineBody.last.y }; sp.line = sp.line.map(p => ({ x: p.x + d.x, y: p.y + d.y })); S.dragSpineBody.last = w; scheduleSpineRetile(S.dragSpineBody.si); }
+  if (S.dragSpineEdge) {                             // move ONE segment of a drive aisle (its two endpoints translate; neighbouring segments rubber-band)
+    const e = S.dragSpineEdge, park = activePark(), sp = park && park.spines && park.spines[e.si];
+    if (sp && sp.line[e.ei] && sp.line[e.ei + 1]) {
+      const d = { x: w.x - e.last.x, y: w.y - e.last.y };
+      sp.line[e.ei] = { x: sp.line[e.ei].x + d.x, y: sp.line[e.ei].y + d.y };
+      sp.line[e.ei + 1] = { x: sp.line[e.ei + 1].x + d.x, y: sp.line[e.ei + 1].y + d.y };
+      e.last = w; scheduleSpineRetile(e.si);
+    }
     return;
   }
   if (S.dragBoundaryEdge) {                          // stretch a boundary EDGE (move both its corners); parking re-flows on release
@@ -2402,8 +2442,8 @@ window.addEventListener('pointerup', () => {
     draw(); commit();
     return;
   }
-  if (S.dragSpineBody) {                              // whole-aisle move done → re-tile cleanly, then re-link the drive network
-    const si = S.dragSpineBody.si; S.dragSpineBody = null; reflowAfterEdit();   // re-tile every lane (refill) + FULL re-knit (other roads come connect)
+  if (S.dragSpineEdge) {                              // edge move done → re-tile cleanly, then re-link the drive network
+    const si = S.dragSpineEdge.si; S.dragSpineEdge = null; reflowAfterEdit();   // re-tile every lane (refill) + FULL re-knit (other roads come connect)
     (S.mode === 'site' ? updateSiteMetrics : updateMetrics)();
     const park = activePark(); if (S.mode === 'site' && park && park.spines && park.spines[si]) showAislePopup(si); else { S.selAisle = null; hideAislePopup(); }
     draw(); commit();
@@ -2494,9 +2534,9 @@ cv.addEventListener('dblclick', e => {
       const ln = park.spines[sn.si].line;
       if (sn.ni > 0 && sn.ni < ln.length - 1) { ln.splice(sn.ni, 1); retileSpine(sn.si, true); reconnectNetwork(); S.selAisle = sn.si; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); toast('已移除彎折點'); return; }
     }
-    const sb = spineBodyAt(w);
-    if (sb >= 0 && park.spines[sb] && park.spines[sb].kind === 'aisle' && insertSpineNode(sb, w)) {
-      S.selAisle = sb; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); toast('已加彎折點 — 拖動黃點可彎曲車道'); return;
+    const se = spineEdgeAt(w);
+    if (se && park.spines[se.si] && park.spines[se.si].kind === 'aisle' && insertSpineNode(se.si, w)) {
+      S.selAisle = se.si; (S.mode === 'site' ? updateSiteMetrics : updateMetrics)(); draw(); commit(); toast('已加彎折點 — 拖動黃點可彎曲車道'); return;
     }
   }
   for (const s of park.stalls) {                       // park = activePark() above → stall-type cycle works in site mode too (no S.solution crash)
