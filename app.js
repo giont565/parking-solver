@@ -2928,8 +2928,18 @@ function setTool(t) {
   if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; S.selOffset = null; hideOffsetPopup(); S.selSwept = null; hideSweptPopup(); }
   draw();
 }
+// "⋯ 更多" overflow dropdown for the rarely-used tools
+const moreTools = document.getElementById('moreTools'), btnMore = document.getElementById('btnMoreTools');
+function closeMoreTools() { if (moreTools) moreTools.classList.remove('open'); if (btnMore) btnMore.classList.remove('open'); }
+if (btnMore) btnMore.addEventListener('click', e => {
+  e.stopPropagation();
+  const open = moreTools.classList.toggle('open'); btnMore.classList.toggle('open', open);
+  if (open) { const r = btnMore.getBoundingClientRect(); moreTools.style.top = (r.bottom + 6) + 'px'; moreTools.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 188)) + 'px'; }   // fixed-position so the scroll-clipped toolbar can't hide it
+});
+document.addEventListener('click', e => { if (moreTools && moreTools.classList.contains('open') && !moreTools.contains(e.target) && e.target !== btnMore && !btnMore.contains(e.target)) closeMoreTools(); });
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
   if (b.dataset.tool === 'boundary') document.querySelectorAll('.tool.pulse-hint').forEach(t => t.classList.remove('pulse-hint'));   // keep the "start here" glow until they actually start drawing the site
+  closeMoreTools();                                   // picking a tool from the dropdown closes it
   setTool(b.dataset.tool);
 }));
 
@@ -5112,6 +5122,7 @@ function boot() {
   setupCollapsible();
   setTool('select');
   sampleSite();                       // geometry + metrics
+  document.querySelectorAll('.tool[data-mode-only]').forEach(b => { b.style.display = b.dataset.modeOnly === S.mode ? '' : 'none'; });   // apply mode-aware toolbar on first paint (before any mode click)
   $('#regionSel').value = 'tw';       // default region = Taiwan (metric + TW dims)
   applyRegion('tw');
   resize();                           // may measure 0 if layout not ready yet

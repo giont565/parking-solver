@@ -210,6 +210,18 @@
     box-shadow:0 1px 6px -1px rgba(56,189,248,.6), 0 0 0 1px rgba(56,189,248,.5) inset;font-weight:600;}
   .tool.pulse-hint{color:var(--accent);animation:toolpulse 1.4s ease-in-out infinite;}
   @keyframes toolpulse{0%,100%{box-shadow:0 0 0 0 rgba(56,189,248,.0);}50%{box-shadow:0 0 0 4px rgba(56,189,248,.45);}}
+  /* "⋯ 更多" overflow: rarely-used tools live in a dropdown so the bar stays scannable */
+  .moreWrap{position:relative;flex:none;}
+  .tbtn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+    min-width:47px;height:38px;padding:3px 6px;border:1px solid transparent;border-radius:8px;
+    background:transparent;color:var(--muted);cursor:pointer;font-size:10px;line-height:1;transition:background .12s,color .12s;}
+  .tbtn svg{width:17px;height:17px;}
+  .tbtn:hover,.tbtn.open{background:var(--panel2);color:var(--text);}
+  #moreTools{display:none;position:fixed;z-index:60;
+    background:#16223a;border:1px solid var(--line);border-radius:11px;padding:6px;
+    box-shadow:0 10px 30px -8px rgba(0,0,0,.7);grid-template-columns:repeat(3,1fr);gap:3px;min-width:172px;}
+  #moreTools.open{display:grid;}
+  #moreTools .tool{min-width:0;width:100%;}
   .btn{height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--line);
     background:var(--panel2);color:var(--text);cursor:pointer;font-weight:600;transition:.12s;display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;}
   .btn:hover{border-color:var(--accent);background:#2c3a52;}
@@ -401,30 +413,37 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/><circle cx="4" cy="4" r="1.6" fill="currentColor"/><circle cx="20" cy="20" r="1.6" fill="currentColor"/></svg>基地</button>
     <button class="tool" data-tool="building" data-mode-only="site" title="畫建築量體 (G)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築</button>
-    <button class="tool" data-tool="obstacle" title="畫障礙 / 排除區 (O)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>障礙</button>
-    <button class="tool" data-tool="road" title="畫場外道路（區劃外的路：切開區劃＋對外動線分析；建築/車位自動繞開）(R)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21l4-18M20 21l-4-18M12 7v2M12 13v2M12 19v1"/></svg>場外道路</button>
-    <button class="tool" data-tool="aisle" title="畫場內道路（自己加一條停車車道：沿你畫的線生雙排車位、自動接進動線網。先自動排車位再用）(A)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18M19 3v18M12 4v3M12 11v3M12 18v2"/></svg>場內道路</button>
+    <button class="tool" data-tool="aisle" title="畫場內車道（沿你畫的線生雙排車位、自動接進動線網。先自動排車位再用）(A)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18M19 3v18M12 4v3M12 11v3M12 18v2"/></svg>停車車道</button>
     <button class="tool" data-tool="parkzone" data-mode-only="parking" title="畫停車區（只在框內排車位）(Z)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><path d="M9 16V8h3a2 2 0 010 4H9"/></svg>停車區</button>
     <button class="tool" data-tool="stall" data-mode-only="parking" title="手動加車位（點一下放一格；選車位按 Delete 刪）(K)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M5 12h14"/></svg>加車位</button>
-    <button class="tool" data-tool="core" data-mode-only="site" title="手動放服務核心（樓梯+電梯）— 建案模式點一下放一個 (C)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="3" width="12" height="18"/><path d="M12 3v18M6 9h12M6 15h12"/></svg>核心</button>
     <button class="tool" data-tool="entrance" title="放出入口 (E)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h12M11 8l4 4-4 4M21 4v16"/></svg>出入口</button>
-    <button class="tool" data-tool="subdivide" data-mode-only="site" title="切割基地成多塊子地 (D)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
-    <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 沿線生成 停車車道（雙排+可拖曳調整）／建築帶／障礙帶 (F)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18c5-5 9-5 16-8"/><path d="M4 11c5-5 9-5 16-8" stroke-dasharray="3 2"/></svg>偏移</button>
-    <button class="tool" data-tool="swept" title="迴轉檢核：選車種（小客車/廂型/巴士/消防車/半聯結車）→ 畫行進路徑 → 看車身掃掠包絡塞不塞得進（綠=過、紅=卡），含 off-tracking／聯結車拖車軌跡 (T)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17h2m14 0h2M7 17a2 2 0 104 0 2 2 0 00-4 0zm8 0a2 2 0 104 0 2 2 0 00-4 0z"/><path d="M5 17v-4l2-4h7l3 4v4M5 11h11" stroke-dasharray="2.5 2"/></svg>迴轉</button>
     <button class="tool" data-tool="measure" title="量測距離 (M)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
     <button class="tool" data-tool="pan" title="平移畫面 (空白鍵拖曳)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11V5a2 2 0 014 0v6m0-3a2 2 0 014 0v5a6 6 0 01-6 6h-1a6 6 0 01-5-3l-2.5-4a1.5 1.5 0 012.6-1.5L11 13"/></svg>平移</button>
+    <div class="tbar-sep"></div>
+    <div class="moreWrap">
+      <button class="tbtn" id="btnMoreTools" title="更多工具">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>更多</button>
+      <div id="moreTools">
+        <button class="tool" data-tool="obstacle" title="畫障礙 / 排除區 (O)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>障礙</button>
+        <button class="tool" data-tool="road" title="畫對外道路（區劃外的路：切開區劃＋對外動線分析；建築/車位自動繞開）(R)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21l4-18M20 21l-4-18M12 7v2M12 13v2M12 19v1"/></svg>對外道路</button>
+        <button class="tool" data-tool="core" data-mode-only="site" title="手動放服務核心（樓梯+電梯）— 建案模式點一下放一個 (C)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="3" width="12" height="18"/><path d="M12 3v18M6 9h12M6 15h12"/></svg>核心</button>
+        <button class="tool" data-tool="subdivide" data-mode-only="site" title="切割基地成多塊子地 (D)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
+        <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 沿線生成 停車車道（雙排+可拖曳調整）／建築帶／障礙帶 (F)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18c5-5 9-5 16-8"/><path d="M4 11c5-5 9-5 16-8" stroke-dasharray="3 2"/></svg>偏移</button>
+        <button class="tool" data-tool="swept" title="迴轉檢核：選車種 → 畫行進路徑 → 看車身掃掠包絡塞不塞得進（綠=過、紅=卡）(T)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17h2m14 0h2M7 17a2 2 0 104 0 2 2 0 00-4 0zm8 0a2 2 0 104 0 2 2 0 00-4 0z"/><path d="M5 17v-4l2-4h7l3 4v4M5 11h11" stroke-dasharray="2.5 2"/></svg>迴轉</button>
+      </div>
+    </div>
     </div>
     <div class="spacer"></div>
     <select id="regionSel" class="tbsel" title="法規地區（可編輯參考預設）">
