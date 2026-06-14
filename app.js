@@ -201,7 +201,13 @@ function refreshUnitLabels() {
   const gfaLab = $('#pGFA') && $('#pGFA').closest('.field').querySelector('label');
   if (gfaLab) gfaLab.textContent = `建築 GFA (${au})`;
 }
-$('#regionSel').addEventListener('change', () => applyRegion($('#regionSel').value));
+// fields that region/use presets fill — once the user hand-edits one, presets stop silently clobbering it
+const PRESET_FIELDS = ['pW', 'pD', 'pA', 'pS', 'sFloorH', 'sEff', 'zFAR', 'zHeight', 'zCov', 'zDUA', 'zSbF', 'zSbS', 'zSbR', 'zPark'];
+function setIfUntouched(id, val) { const el = $('#' + id); if (el && !el.dataset.uxTouched) el.value = val; }
+function clearTouched() { PRESET_FIELDS.forEach(id => { const el = $('#' + id); if (el) delete el.dataset.uxTouched; }); }
+PRESET_FIELDS.forEach(id => { const el = $('#' + id); if (el) el.addEventListener('input', () => { el.dataset.uxTouched = '1'; }); });
+// region dropdown = explicit "load this jurisdiction" → full apply (resets the hand-edit marks)
+$('#regionSel').addEventListener('change', () => { clearTouched(); applyRegion($('#regionSel').value); });
 document.querySelectorAll('#unitSeg button').forEach(b => b.onclick = () => setUnits(b.dataset.u));
 
 function setUnitSystem(sys) {              // switch label/units only (no value convert)
@@ -229,13 +235,13 @@ function applyRegion(r) {
   const R = REGIONS[r]; if (!R) return;
   convertInputValues(R.unit);              // convert non-overwritten fields (e.g. height)
   setUnitSystem(R.unit);
-  $('#pW').value = round2(U.L(R.stallW)); $('#pD').value = round2(U.L(R.stallD));
-  $('#pA').value = round2(U.L(R.aisle)); $('#pS').value = round2(U.L(R.setback));
+  setIfUntouched('pW', round2(U.L(R.stallW))); setIfUntouched('pD', round2(U.L(R.stallD)));
+  setIfUntouched('pA', round2(U.L(R.aisle))); setIfUntouched('pS', round2(U.L(R.setback)));
   const s = R.site;
-  $('#sFloorH').value = round2(U.L(s.floorH)); $('#zFAR').value = s.maxFAR;
-  $('#zHeight').value = round2(U.L(s.maxHeight)); $('#zCov').value = s.maxCov; $('#zDUA').value = s.maxDUA;
-  $('#zSbF').value = round2(U.L(s.sbF)); $('#zSbS').value = round2(U.L(s.sbS)); $('#zSbR').value = round2(U.L(s.sbR));
-  $('#zPark').value = s.parkRatio;
+  setIfUntouched('sFloorH', round2(U.L(s.floorH))); setIfUntouched('zFAR', s.maxFAR);
+  setIfUntouched('zHeight', round2(U.L(s.maxHeight))); setIfUntouched('zCov', s.maxCov); setIfUntouched('zDUA', s.maxDUA);
+  setIfUntouched('zSbF', round2(U.L(s.sbF))); setIfUntouched('zSbS', round2(U.L(s.sbS))); setIfUntouched('zSbR', round2(U.L(s.sbR)));
+  setIfUntouched('zPark', s.parkRatio);
   refreshUnitLabels();
   toast(`已套用 ${({ us: '美規', tw: '台灣', jp: '日本', eu: '歐洲' })[r]} 參考預設（可再手動調整）`);
   if (S.mode === 'site') { if (S.boundary.length >= 3) doSolveSite(); else updateSiteMetrics(); }
@@ -3541,7 +3547,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
-  S._isSample = false;
+  S._isSample = false; clearTouched();
   S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
@@ -3927,6 +3933,7 @@ const DEMOS = [
 ];
 function loadDemo(d) {
   if (!d) return;
+  clearTouched();                       // a demo is an explicit preset → apply its values fully
   if (S.mode !== 'site') setMode('site');
   const par = DEMO_PARCELS[d.parcel] || DEMO_PARCELS.sample;
   S.boundary = par.map(p => ({ ...p }));
@@ -3972,7 +3979,7 @@ function loadDemo(d) {
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 $('#sUse').addEventListener('change', () => {
   const use = $('#sUse').value, pre = USE_PRESETS[use];
-  $('#sFloorH').value = round2(U.L(pre.floorH)); $('#sEff').value = pre.eff; $('#zPark').value = pre.parkRatio;   // preset floorH is in ft → convert to the display unit
+  setIfUntouched('sFloorH', round2(U.L(pre.floorH))); setIfUntouched('sEff', pre.eff); setIfUntouched('zPark', pre.parkRatio);   // don't silently wipe values the user hand-set
   $('#grpUnitMix').style.display = pre.resi ? '' : 'none';
   $('#fRentResiRow').style.display = pre.resi ? '' : 'none';
   $('#fRentCommRow').style.display = pre.resi ? 'none' : '';
