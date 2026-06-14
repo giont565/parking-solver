@@ -149,6 +149,16 @@
   #offsetPopup button.del:hover{background:var(--bad);color:#fff;border-color:var(--bad);}
   #offsetPopup input{width:62px;height:24px;background:#0f1a2b;color:var(--text);border:1px solid var(--line);border-radius:5px;padding:0 6px;font-size:12px;}
   #offsetPopup .lab{font-size:11px;color:var(--muted);}
+  /* swept-path (車輛迴轉檢核) editor */
+  #sweptPopup{border-color:#a855f7;}
+  #sweptPopup .cap{font-size:10px;color:#c084fc;text-align:center;font-weight:700;}
+  #sweptVeh{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}
+  #sweptVeh button{height:30px;border:1px solid var(--line);background:#0f1a2b;color:var(--text);border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;padding:0 3px;}
+  #sweptVeh button:hover{border-color:#a855f7;}
+  #sweptVeh button.active{background:#a855f7;color:#fff;border-color:#a855f7;}
+  .swres{font-size:11.5px;line-height:1.5;padding:7px 9px;border-radius:7px;}
+  .swres.ok{background:rgba(34,197,94,.14);color:#86efac;border:1px solid var(--good);}
+  .swres.bad{background:rgba(239,68,68,.14);color:#fca5a5;border:1px solid var(--bad);}
   #aislePopup{position:absolute;display:none;z-index:7;flex-direction:column;gap:4px;padding:7px 9px;
     background:rgba(15,23,42,.97);border:1px solid #38bdf8;border-radius:8px;
     box-shadow:0 6px 22px rgba(0,0,0,.55);transform:translate(-50%,-130%);}
@@ -377,7 +387,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-6 1 3 6-3 1-3-6-5 4z"/></svg>選取</button>
     <button class="tool" data-tool="boundary" title="畫基地邊界 (B)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/><circle cx="4" cy="4" r="1.6" fill="currentColor"/><circle cx="20" cy="20" r="1.6" fill="currentColor"/></svg>基地</button>
-    <button class="tool" data-tool="building" title="畫建築量體 (G)">
+    <button class="tool" data-tool="building" data-mode-only="site" title="畫建築量體 (G)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V8l6-4 6 4v13M9 21v-4h6v4"/></svg>建築</button>
     <button class="tool" data-tool="obstacle" title="畫障礙 / 排除區 (O)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>障礙</button>
@@ -385,18 +395,20 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21l4-18M20 21l-4-18M12 7v2M12 13v2M12 19v1"/></svg>場外道路</button>
     <button class="tool" data-tool="aisle" title="畫場內道路（自己加一條停車車道：沿你畫的線生雙排車位、自動接進動線網。先自動排車位再用）(A)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18M19 3v18M12 4v3M12 11v3M12 18v2"/></svg>場內道路</button>
-    <button class="tool" data-tool="parkzone" title="畫停車區（只在框內排車位）(Z)">
+    <button class="tool" data-tool="parkzone" data-mode-only="parking" title="畫停車區（只在框內排車位）(Z)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><path d="M9 16V8h3a2 2 0 010 4H9"/></svg>停車區</button>
-    <button class="tool" data-tool="stall" title="手動加車位（點一下放一格；選車位按 Delete 刪）(K)">
+    <button class="tool" data-tool="stall" data-mode-only="parking" title="手動加車位（點一下放一格；選車位按 Delete 刪）(K)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M5 12h14"/></svg>加車位</button>
-    <button class="tool" data-tool="core" title="手動放服務核心（樓梯+電梯）— 建案模式點一下放一個 (C)">
+    <button class="tool" data-tool="core" data-mode-only="site" title="手動放服務核心（樓梯+電梯）— 建案模式點一下放一個 (C)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="3" width="12" height="18"/><path d="M12 3v18M6 9h12M6 15h12"/></svg>核心</button>
     <button class="tool" data-tool="entrance" title="放出入口 (E)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h12M11 8l4 4-4 4M21 4v16"/></svg>出入口</button>
-    <button class="tool" data-tool="subdivide" title="切割基地成多塊子地 (D)">
+    <button class="tool" data-tool="subdivide" data-mode-only="site" title="切割基地成多塊子地 (D)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l18 18M14 4l6 6M4 14l6 6"/></svg>切割</button>
     <button class="tool" data-tool="offsetpath" title="路徑偏移：畫一條線 → 沿線生成 停車車道（雙排+可拖曳調整）／建築帶／障礙帶 (F)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18c5-5 9-5 16-8"/><path d="M4 11c5-5 9-5 16-8" stroke-dasharray="3 2"/></svg>偏移</button>
+    <button class="tool" data-tool="swept" title="迴轉檢核：選車種（小客車/廂型/巴士/消防車/半聯結車）→ 畫行進路徑 → 看車身掃掠包絡塞不塞得進（綠=過、紅=卡），含 off-tracking／聯結車拖車軌跡 (T)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17h2m14 0h2M7 17a2 2 0 104 0 2 2 0 00-4 0zm8 0a2 2 0 104 0 2 2 0 00-4 0z"/><path d="M5 17v-4l2-4h7l3 4v4M5 11h11" stroke-dasharray="2.5 2"/></svg>迴轉</button>
     <button class="tool" data-tool="measure" title="量測距離 (M)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14l8-8 8 8-8 8zM7 9l2 2M10 6l2 2M13 9l2 2"/></svg>量測</button>
     <button class="tool" data-tool="pan" title="平移畫面 (空白鍵拖曳)">
@@ -575,6 +587,21 @@
         <button data-side="left">A 側</button><button data-side="center">置中</button><button data-side="right">B 側</button>
       </div>
       <div class="row"><button id="offDelete" class="del" style="flex:1">🗑 刪除偏移空間</button></div>
+    </div>
+
+    <!-- swept-path / vehicle turning check (select a drawn path) -->
+    <div id="sweptPopup" class="selcard">
+      <div class="cap">🚛 車輛迴轉檢核 Swept Path</div>
+      <div id="sweptVeh">
+        <button data-veh="car">🚗 小客車</button>
+        <button data-veh="van">🚐 廂型車</button>
+        <button data-veh="bus">🚌 巴士</button>
+        <button data-veh="fire">🚒 消防車</button>
+        <button data-veh="semi">🚛 半聯結車</button>
+      </div>
+      <div id="sweptResult" class="swres">畫一條行進路徑後顯示能不能通過</div>
+      <div class="cap" style="color:var(--muted);font-weight:500;font-size:9px;letter-spacing:0;">拖白點調整路徑、拖線整條挪；綠=可過、紅=車身越界/撞物。Delete 刪除。</div>
+      <div class="row"><button id="sweptDelete" class="del" style="flex:1">🗑 刪除迴轉路徑</button></div>
     </div>
     </div>
     <!-- metrics -->
@@ -763,10 +790,10 @@
       <div class="group">
         <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>法規 Zoning <span style="margin-left:auto;font-size:9px;color:var(--muted);">手動輸入</span></h3>
         <div class="body">
-          <div class="field"><label>最大容積 Max FAR</label><input type="number" id="zFAR" value="2.0" step="0.1" min="0.1" max="30"></div>
-          <div class="field"><label>最大高度 Height (ft)</label><input type="number" id="zHeight" value="75" step="1" min="10" max="1000"></div>
-          <div class="field"><label>最大建蔽 Coverage (%)</label><input type="number" id="zCov" value="45" step="1" min="5" max="100"></div>
-          <div class="field"><label>密度上限 DU/acre</label><input type="number" id="zDUA" value="40" step="1" min="0" placeholder="0=不限"></div>
+          <div class="field" title="容積率 FAR＝可蓋總樓地板面積 ÷ 基地面積。例：2.0＝最多蓋 2 倍基地的樓地板。"><label>最大容積率 FAR</label><input type="number" id="zFAR" value="2.0" step="0.1" min="0.1" max="30" title="容積率 FAR＝可蓋總樓地板面積 ÷ 基地面積"></div>
+          <div class="field" title="建物最高可蓋到幾呎/公尺"><label>最大高度 Height</label><input type="number" id="zHeight" value="75" step="1" min="10" max="1000" title="建物最高可蓋到的高度"></div>
+          <div class="field" title="建蔽率＝建物投影佔基地的比例（地面被蓋掉多少）"><label>最大建蔽率 (%)</label><input type="number" id="zCov" value="45" step="1" min="5" max="100" title="建蔽率＝建物投影佔基地的比例"></div>
+          <div class="field" title="戶數密度上限：每英畝最多幾戶（0＝不限）"><label>戶數密度 戶/英畝</label><input type="number" id="zDUA" value="40" step="1" min="0" placeholder="0=不限" title="每英畝最多幾戶"></div>
           <div class="field"><label>退縮 前 / 側 / 後 (ft)</label>
             <span style="display:flex;gap:4px;">
               <input type="number" id="zSbF" value="25" step="1" min="0" style="width:42px;">

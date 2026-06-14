@@ -34,6 +34,7 @@ const S = {
   parcels: null, activeParcel: 0, parcelDev: null, splitPt: null,  // subdivision: sub-parcels (parcelDev[i] = each parcel's saved development → master plan keeps them all)
   offsetSpaces: [],        // TestFit-style editable offset spaces {line,width,anchor,program}; each owns a building/obstacle host kept in sync
   selOffset: null, dragOffset: null,   // selected offset space + active drag {oi, kind:'vtx'|'width'|'body', ...}
+  sweptPaths: [], selSwept: null, dragSwept: null, sweptVehicle: 'semi',   // 車輛迴轉/掃掠路徑檢核 {pts,vehicle} — 純 annotation，不參與 solve（像量測）
   ponds: [],               // detention/retention pond polygons — also pushed into S.obstacles (parking avoids them), rendered blue + counted
   draft: null,             // in-progress polygon points
   draftKind: null,         // 'boundary'|'building'|'obstacle'
@@ -584,6 +585,7 @@ function draw() {
   // draft in progress
   if (S.draft && S.draft.length) drawDraft();
   drawOffsetOverlays();
+  drawSweptPaths();
 
   // selected stall highlight
   if (S.selStall) {
@@ -1129,6 +1131,178 @@ $('#offW') && ($('#offW').onchange = () => { resolveActive(); commit(); });
 document.querySelectorAll('#offSide button').forEach(b => b.onclick = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; sp.anchor = b.dataset.side; rebuildOffsetSpace(sp); showOffsetPopup(); resolveActive(); draw(); commit(); });
 document.querySelectorAll('#offKind button').forEach(b => b.onclick = () => { const sp = S.offsetSpaces[S.selOffset]; if (!sp) return; setOffsetProgram(sp, b.dataset.prog); showOffsetPopup(); draw(); });
 $('#offDelete') && ($('#offDelete').onclick = () => { if (S.selOffset != null) deleteOffsetSpace(S.selOffset); draw(); });
+
+/* ====================== SWEPT PATH — 車輛迴轉 / 掃掠路徑檢核 (AASHTO 設計車輛) ======================
+   選車種 → 手畫行進路徑 → 算出車身低速掃掠包絡（含 off-tracking 後輪內切、聯結車拖車軌跡 tractrix），
+   紅 = 車身越界 / 撞建築 / 撞障礙，綠 = 可通過；另比對「路徑最小彎」與「車輛最小迴轉半徑」。
+   純檢核 annotation：不參與 solve（像量測標註），但會進 undo / JSON。對標 TestFit 卡車迴轉場 demo。 */
+const SWEPT_VEHICLES = [
+  // L 總長 · W 車寬 · fo 前懸(保桿→前軸) · wb 軸距 · ro 後懸 · minR 設計最小迴轉半徑(中心線,ft)
+  // art=聯結車：tFo 拖車前懸 · tWB king-pin→拖車軸 · tRo 拖車後懸（曳引車軸距沿用 wb）。單位皆為英尺。
+  { id:'car',  label:'🚗 小客車',   color:'#3b82f6', L:19,   W:7,   fo:3, wb:11, ro:5, minR:24, art:false },
+  { id:'van',  label:'🚐 廂型車',   color:'#10b981', L:22,   W:7.5, fo:3, wb:14, ro:5, minR:28, art:false },
+  { id:'bus',  label:'🚌 巴士',     color:'#f59e0b', L:40,   W:8.5, fo:7, wb:25, ro:8, minR:43, art:false },
+  { id:'fire', label:'🚒 消防車',   color:'#ef4444', L:31,   W:8.5, fo:4, wb:20, ro:7, minR:45, art:false },
+  { id:'semi', label:'🚛 半聯結車', color:'#a855f7', L:73.5, W:8.5, fo:4, wb:20, ro:0, minR:45, art:true, tFo:2, tWB:41, tRo:8.5 },
+];
+const sweptVeh = id => SWEPT_VEHICLES.find(v => v.id === id) || SWEPT_VEHICLES[0];
+const svV = {                              // tiny vector helpers (prefixed → no global collisions)
+  sub:(a,b)=>({x:a.x-b.x,y:a.y-b.y}), add:(a,b)=>({x:a.x+b.x,y:a.y+b.y}),
+  mul:(a,k)=>({x:a.x*k,y:a.y*k}), len:a=>Math.hypot(a.x,a.y),
+  unit:a=>{const L=Math.hypot(a.x,a.y)||1;return{x:a.x/L,y:a.y/L};}, perp:a=>({x:-a.y,y:a.x}),
+};
+function svResample(pts, step){            // densify a polyline to ~step ft spacing (so the tractrix integrates smoothly)
+  if (pts.length < 2) return pts.slice();
+  const out=[{x:pts[0].x,y:pts[0].y}];
+  for (let i=1;i<pts.length;i++){
+    const a=pts[i-1], b=pts[i], d=svV.sub(b,a), L=svV.len(d), n=Math.max(1,Math.round(L/step));
+    for (let k=1;k<=n;k++) out.push(svV.add(a, svV.mul(d, k/n)));
+  }
+  return out;
+}
+function svFollow(lead, L){                 // tractrix: a towed axle stays distance L behind the lead point, always swinging toward it
+  if (lead.length < 2 || !(L > 0)) return lead.slice();
+  const out=[], d0=svV.unit(svV.sub(lead[1],lead[0]));
+  let prev=svV.sub(lead[0], svV.mul(d0,L)); out.push(prev);
+  for (let i=1;i<lead.length;i++){
+    const f=lead[i], dir=svV.unit(svV.sub(f,prev)), nr=svV.sub(f, svV.mul(dir,L));
+    out.push(nr); prev=nr;
+  }
+  return out;
+}
+function svBody(frontRef, rearRef, fo, ro, W){   // body rectangle from (frontRef + fo ahead) to (rearRef − ro behind), width W
+  const u=svV.unit(svV.sub(frontRef, rearRef)), n=svV.perp(u), hw=W/2;
+  const f=svV.add(frontRef, svV.mul(u, fo)), r=svV.sub(rearRef, svV.mul(u, ro));
+  return [ svV.add(f, svV.mul(n,hw)), svV.add(f, svV.mul(n,-hw)), svV.add(r, svV.mul(n,-hw)), svV.add(r, svV.mul(n,hw)) ];
+}
+function svBBox(poly){ let a=1e9,b=1e9,c=-1e9,d=-1e9; for (const p of poly){ if(p.x<a)a=p.x; if(p.y<b)b=p.y; if(p.x>c)c=p.x; if(p.y>d)d=p.y; } return {a,b,c,d}; }
+function svBoxHit(p,q){ return !(p.c<q.a || q.c<p.a || p.d<q.b || q.d<p.b); }
+function svPathMinR(path){                  // tightest turn the path demands (Menger circumradius over consecutive samples)
+  let minR=Infinity;
+  for (let i=1;i+1<path.length;i++){
+    const a=path[i-1], b=path[i], c=path[i+1];
+    const ab=svV.len(svV.sub(b,a)), bc=svV.len(svV.sub(c,b)), ca=svV.len(svV.sub(a,c));
+    const area=Math.abs((b.x-a.x)*(c.y-a.y)-(c.x-a.x)*(b.y-a.y))/2;
+    if (area < 0.05) continue;              // ~straight → ignore
+    const R=(ab*bc*ca)/(4*area);
+    if (R < minR) minR=R;
+  }
+  return minR;
+}
+function computeSwept(sw){
+  const v=sweptVeh(sw.vehicle), empty={bodies:[], conflicts:0, pathMinR:Infinity, vehMinR:v.minR, tooTight:false, ok:true, veh:v};
+  if (!sw.pts || sw.pts.length < 2) return empty;
+  let len=0; for (let i=1;i<sw.pts.length;i++) len+=svV.len(svV.sub(sw.pts[i],sw.pts[i-1]));
+  const step=Math.max(1.5, len/140);        // cap stations so every redraw stays cheap on big sites
+  const path=svResample(sw.pts, step);
+  if (path.length < 2) return empty;
+  const bodies=[];
+  if (!v.art){
+    const rear=svFollow(path, v.wb);
+    for (let i=0;i<path.length;i++) bodies.push({poly: svBody(path[i], rear[i], v.fo, v.ro, v.W)});
+  } else {
+    const drive=svFollow(path, v.wb), tAxle=svFollow(drive, v.tWB);   // tractor drive axle → trailer axle (chained tractrix)
+    for (let i=0;i<path.length;i++){
+      bodies.push({poly: svBody(path[i], drive[i], v.fo, 3, v.W)});        // tractor (cab+fifth wheel)
+      bodies.push({poly: svBody(drive[i], tAxle[i], v.tFo, v.tRo, v.W)});  // trailer
+    }
+  }
+  // collision: bbox-prefiltered overlap vs boundary(out) / buildings / obstacles
+  const blds=S.buildings.filter(b=>b&&b.poly&&b.poly.length>=3).map(b=>({poly:b.poly,bb:svBBox(b.poly)}));
+  const obs=S.obstacles.filter(o=>o&&o.length>=3).map(o=>({poly:o,bb:svBBox(o)}));
+  const hasB=S.boundary.length>=3;
+  let conflicts=0;
+  for (const bd of bodies){
+    const bb=svBBox(bd.poly); let bad=false;
+    if (hasB && bd.poly.some(c=>!PS.pointInPoly(c, S.boundary))) bad=true;
+    if (!bad) for (const x of blds){ if (svBoxHit(bb,x.bb) && PS.polyOverlap(bd.poly, x.poly)){ bad=true; break; } }
+    if (!bad) for (const x of obs){ if (svBoxHit(bb,x.bb) && PS.polyOverlap(bd.poly, x.poly)){ bad=true; break; } }
+    bd.conflict=bad; if (bad) conflicts++;
+  }
+  const pathMinR=svPathMinR(path), tooTight=pathMinR < v.minR - 0.5;
+  return {bodies, conflicts, pathMinR, vehMinR:v.minR, tooTight, ok: conflicts===0 && !tooTight, veh:v};
+}
+function svOutline(poly, solid, col){
+  ctx.beginPath(); poly.forEach((p,k)=>{ const s=toScreen(p); k?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y); }); ctx.closePath();
+  ctx.lineWidth=solid?2:1.2; ctx.strokeStyle=col; ctx.stroke();
+}
+// Render every swept path: translucent green/red band (the envelope), the start+end vehicle outlines (so you
+// see the real rig & direction), the dashed centre line + arrow, and (when selected) waypoint handles + a
+// PASS/FAIL chip. 2D + map mode (not 3D).
+function drawSweptPaths(){
+  if (S.is3d || !S.sweptPaths.length) return;
+  S.sweptPaths.forEach((sw, si)=>{
+    if (!sw.pts || sw.pts.length < 2) return;
+    const sel=si===S.selSwept, res=computeSwept(sw), v=res.veh;
+    ctx.save();
+    // 1) swept band fill
+    res.bodies.forEach(bd=>{
+      ctx.beginPath(); bd.poly.forEach((p,k)=>{ const s=toScreen(p); k?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y); }); ctx.closePath();
+      ctx.fillStyle = bd.conflict ? 'rgba(239,68,68,0.18)' : 'rgba(34,197,94,0.10)'; ctx.fill();
+    });
+    // 2) solid vehicle outline at first & last station (semi = tractor+trailer → 2 bodies per station)
+    const per=v.art?2:1, last=res.bodies.length-per;
+    for (let k=0;k<per;k++){ if (res.bodies[k]) svOutline(res.bodies[k].poly, true, v.color); if (res.bodies[last+k]) svOutline(res.bodies[last+k].poly, true, v.color); }
+    // 3) dashed centre line + direction arrow
+    ctx.setLineDash([6,4]); ctx.lineWidth=sel?2.4:1.6; ctx.strokeStyle=v.color; ctx.lineCap='round';
+    ctx.beginPath(); sw.pts.forEach((p,k)=>{ const s=toScreen(p); k?ctx.lineTo(s.x,s.y):ctx.moveTo(s.x,s.y); }); ctx.stroke(); ctx.setLineDash([]);
+    { const a=toScreen(sw.pts[sw.pts.length-2]), b=toScreen(sw.pts[sw.pts.length-1]), ang=Math.atan2(b.y-a.y,b.x-a.x);
+      ctx.fillStyle=v.color; ctx.beginPath(); ctx.moveTo(b.x,b.y);
+      ctx.lineTo(b.x-11*Math.cos(ang-0.4), b.y-11*Math.sin(ang-0.4)); ctx.lineTo(b.x-11*Math.cos(ang+0.4), b.y-11*Math.sin(ang+0.4));
+      ctx.closePath(); ctx.fill(); }
+    // 4) selected: waypoint handles + PASS/FAIL chip
+    if (sel){
+      sw.pts.forEach(p=>{ const s=toScreen(p); ctx.beginPath(); ctx.arc(s.x,s.y,4.5,0,7); ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=v.color; ctx.stroke(); });
+      const mid=toScreen(sw.pts[Math.floor(sw.pts.length/2)]);
+      const txt = res.ok ? '✓ 可通過' : (res.conflicts ? `✕ ${res.conflicts} 處塞不下` : '⚠️ 彎太急');
+      ctx.font='bold 11px system-ui'; ctx.textAlign='left'; ctx.textBaseline='middle';
+      const tw=ctx.measureText(txt).width+16, bx=mid.x+12, by=mid.y-10;
+      ctx.fillStyle = res.ok ? 'rgba(22,163,74,0.95)' : 'rgba(220,38,38,0.95)';
+      if (ctx.roundRect){ ctx.beginPath(); ctx.roundRect(bx,by,tw,20,5); ctx.fill(); } else ctx.fillRect(bx,by,tw,20);
+      ctx.fillStyle='#fff'; ctx.fillText(txt, bx+8, by+10);
+    }
+    ctx.restore();
+  });
+}
+function createSweptPath(pts){
+  const sw={ pts: pts.map(p=>({x:p.x,y:p.y})), vehicle: S.sweptVehicle || 'semi' };
+  S.sweptPaths.push(sw); S.selSwept=S.sweptPaths.length-1;
+  setTool('select'); showSweptPopup(); draw(); commit();
+  toast('已建立迴轉檢核路徑 — 上方選車種、紅=塞不下、拖白點調路徑、Delete 刪除');
+}
+function sweptVertexAt(w){                  // pick a waypoint {si,pi} near w (screen space)
+  const m=toScreen(w);
+  for (let si=0;si<S.sweptPaths.length;si++){ const pts=S.sweptPaths[si].pts;
+    for (let pi=0;pi<pts.length;pi++){ const s=toScreen(pts[pi]); if (Math.hypot(s.x-m.x,s.y-m.y)<12) return {si,pi}; } }
+  return null;
+}
+function sweptBodyAt(w){                     // pick a path centre-line {si} for select / whole-move
+  const m=toScreen(w);
+  for (let si=0;si<S.sweptPaths.length;si++){ const pts=S.sweptPaths[si].pts;
+    for (let i=0;i+1<pts.length;i++) if (distSegPx(m, toScreen(pts[i]), toScreen(pts[i+1]))<7) return {si}; }
+  return null;
+}
+function showSweptPopup(){
+  const sw=S.sweptPaths[S.selSwept], el=$('#sweptPopup'); if (!sw || !el) return;
+  const a=toScreen(sw.pts[Math.floor(sw.pts.length/2)] || sw.pts[0]);
+  el.style.left=a.x+'px'; el.style.top=(a.y-14)+'px'; el.classList.add('show');
+  document.querySelectorAll('#sweptVeh button').forEach(b=>b.classList.toggle('active', b.dataset.veh===sw.vehicle));
+  const res=computeSwept(sw), rd=$('#sweptResult');
+  if (rd){
+    const minRtxt = isFinite(res.pathMinR) ? `${round2(U.L(res.pathMinR))}${U.lu()}` : '直線', needTxt=`${round2(U.L(res.vehMinR))}${U.lu()}`;
+    if (res.ok){ rd.className='swres ok'; rd.innerHTML=`✓ <b>可通過</b> · 路徑最小彎 R=${minRtxt}（車輛需 ≥ ${needTxt}）`; }
+    else {
+      const parts=[];
+      if (res.conflicts) parts.push(`${res.conflicts} 處車身越界 / 撞建築障礙`);
+      if (res.tooTight) parts.push(`彎太急（R=${minRtxt} < 車輛 ${needTxt}）`);
+      rd.className='swres bad'; rd.innerHTML='✕ <b>過不去</b> · '+parts.join('；');
+    }
+  }
+}
+function hideSweptPopup(){ const el=$('#sweptPopup'); if (el) el.classList.remove('show'); }
+document.querySelectorAll('#sweptVeh button').forEach(b=>b.onclick=()=>{ const sw=S.sweptPaths[S.selSwept]; if (!sw) return; sw.vehicle=b.dataset.veh; S.sweptVehicle=b.dataset.veh; showSweptPopup(); draw(); commit(); });
+$('#sweptDelete') && ($('#sweptDelete').onclick=()=>{ if (S.selSwept!=null){ S.sweptPaths.splice(S.selSwept,1); S.selSwept=null; hideSweptPopup(); draw(); commit(); } });
+
 // draw user roads as smooth continuous asphalt: stroke the centre-line with round joins/caps (curb edge under,
 // asphalt body, dashed yellow centre stripe). Round joins make bends real instead of blocky box segments.
 // UNIT FIT floor plan: colour-coded apartment-unit rectangles tiled into the residential plate
@@ -1408,14 +1582,14 @@ function drawDraft() {
     const p = toScreen(v);
     ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
   }
-  if ((S.draftKind === 'road' || S.draftKind === 'offsetpath') && S.draft.length >= 2) {   // hint: how to finish an open polyline
+  if ((S.draftKind === 'road' || S.draftKind === 'offsetpath' || S.draftKind === 'swept') && S.draft.length >= 2) {   // hint: how to finish an open polyline
     const last = toScreen(S.draft[S.draft.length - 1]);
     ctx.fillStyle = S.draftKind === 'road' ? 'rgba(250,204,21,.95)' : 'rgba(56,189,248,.95)';
     ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-    ctx.fillText(S.draftKind === 'road' ? '雙擊或 Enter 完成道路' : '雙擊或 Enter 完成路徑 → 設定偏移', last.x + 10, last.y - 6);
+    ctx.fillText(S.draftKind === 'road' ? '雙擊或 Enter 完成道路' : S.draftKind === 'swept' ? '雙擊或 Enter 完成路徑 → 迴轉檢核' : '雙擊或 Enter 完成路徑 → 設定偏移', last.x + 10, last.y - 6);
   }
   // highlight close target
-  if (S.draftKind !== 'road' && S.draftKind !== 'offsetpath' && S.draft.length >= 3 && S.hoverWorld) {
+  if (S.draftKind !== 'road' && S.draftKind !== 'offsetpath' && S.draftKind !== 'swept' && S.draft.length >= 3 && S.hoverWorld) {
     const first = toScreen(S.draft[0]);
     const hv = toScreen(S.hoverWorld);
     if (Math.hypot(first.x - hv.x, first.y - hv.y) < 12) {
@@ -2197,10 +2371,10 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) return;  // right handled on contextmenu
 
-  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'aisle' || S.tool === 'parkzone' || S.tool === 'offsetpath') {
+  if (S.tool === 'boundary' || S.tool === 'building' || S.tool === 'obstacle' || S.tool === 'road' || S.tool === 'aisle' || S.tool === 'parkzone' || S.tool === 'offsetpath' || S.tool === 'swept') {
     if (!S.draft) { S.draft = []; S.draftKind = S.tool; }
-    // closed shapes snap to the first point to close; a road / aisle / offset path is an open polyline (double-click / Enter to finish)
-    if (S.tool !== 'road' && S.tool !== 'aisle' && S.tool !== 'offsetpath' && S.draft.length >= 3) {
+    // closed shapes snap to the first point to close; a road / aisle / offset path / swept path is an open polyline (double-click / Enter to finish)
+    if (S.tool !== 'road' && S.tool !== 'aisle' && S.tool !== 'offsetpath' && S.tool !== 'swept' && S.draft.length >= 3) {
       const f = toScreen(S.draft[0]), sp = toScreen(w);
       if (Math.hypot(f.x - sp.x, f.y - sp.y) < 12) { finishDraft(); return; }
     }
@@ -2278,6 +2452,8 @@ cv.addEventListener('pointerdown', e => {
     // OFFSET SPACE — width handle (highest priority, only on the selected space), then a centre-line node
     { const wh = offsetWidthHandleAt(w); if (wh) { S.dragOffset = { oi: wh.oi, kind: 'width' }; draw(); return; } }
     { const ov = offsetVertexAt(w); if (ov) { S.dragOffset = { oi: ov.oi, kind: 'vtx', pi: ov.pi }; S.selOffset = ov.oi; showOffsetPopup(); draw(); return; } }
+    // SWEPT PATH — grab a waypoint to reshape the vehicle path (small target → high priority)
+    { const sv = sweptVertexAt(w); if (sv) { S.dragSwept = { si: sv.si, pi: sv.pi }; S.selSwept = sv.si; showSweptPopup(); draw(); return; } }
     // ROAD EDIT — grab a centre-line vertex (drag the ends to extend/shorten, mid-points to reshape). Small target → before boundary.
     { const rv = roadVertexAt(w); if (rv) { S.dragRoad = rv; S.selRoad = rv.ri; S.selStall = null; showRoadPopup(rv.ri); draw(); return; } }
     // vertex grab on boundary (corners win — few + structural; the boundary now re-flows the parking on release)
@@ -2296,6 +2472,8 @@ cv.addEventListener('pointerdown', e => {
     { const be = boundaryEdgeAt(w); if (be >= 0) { S.dragBoundaryEdge = { i: be, last: w, moved: false, reflow: (S.mode === 'site' ? !!S.site : !!S.solution) }; return; } }
     // OFFSET SPACE BODY — grab the centre line to move the whole space (also selects it)
     { const ob = offsetBodyAt(w); if (ob) { S.dragOffset = { oi: ob.oi, kind: 'body', last: w }; S.selOffset = ob.oi; showOffsetPopup(); draw(); return; } }
+    // SWEPT PATH BODY — grab the centre line to move the whole path (also selects it for the vehicle popup)
+    { const sb = sweptBodyAt(w); if (sb) { S.dragSwept = { si: sb.si, body: true, last: w }; S.selSwept = sb.si; showSweptPopup(); draw(); return; } }
     // ROAD EDIT — grab the road body to move the whole road (also selects it for the width / delete popup).
     { const rb = roadBodyAt(w); if (rb) { S.dragRoad = { ri: rb.ri, body: true, last: w }; S.selRoad = rb.ri; S.selStall = null; showRoadPopup(rb.ri); draw(); return; } }
     // MASSING — grab a building footprint corner to reshape it (parking re-packs on release). Small target → before edge/body.
@@ -2320,13 +2498,13 @@ cv.addEventListener('pointerdown', e => {
     { const ai = aisleAt(w); if (ai >= 0) { S.selAisle = ai; S.selStall = null; S.selRoad = null; showAislePopup(ai); draw(); return; } }
     // clicking an ORANGE/GREEN connector (auto "glue" lanes, regenerated each solve) → explain why it's not directly editable
     { if (connectorAt(w) >= 0) { S.selAisle = null; hideAislePopup(); toast('場內道路：拖兩端的點可調整這條線，車位會跟著重貼'); draw(); return; } }
-    S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; S.selObstacle = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); draw();
+    S.selStall = null; S.selBuilding = null; S.selEdge = null; S.selRoad = null; S.selAisle = null; S.selObstacle = null; S.selSwept = null; hideEdgePopup(); hideRoadPopup(); hideAislePopup(); hideSweptPopup(); draw();
   }
 });
 
 cv.addEventListener('pointermove', e => {
   const w = evtWorld(e);
-  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'parkzone', 'subdivide', 'measure', 'offsetpath'].includes(S.tool) ? snap(w) : null;
+  S.hoverWorld = ['boundary', 'building', 'obstacle', 'road', 'parkzone', 'subdivide', 'measure', 'offsetpath', 'swept'].includes(S.tool) ? snap(w) : null;
   if ((S.tool === 'subdivide' && S.splitPt) || (S.tool === 'measure' && S.measureStart)) draw();
   $('#stCoord').textContent = `${w.x.toFixed(1)} , ${w.y.toFixed(1)} ft`;
 
@@ -2362,6 +2540,15 @@ cv.addEventListener('pointermove', e => {
         sp.line = sp.line.map(p => ({ x: p.x + dx, y: p.y + dy })); S.dragOffset.last = w;
       } else { sp.line[S.dragOffset.pi] = snap(w); }
       rebuildOffsetSpace(sp); showOffsetPopup(); draw();
+    }
+    return;
+  }
+  if (S.dragSwept) {                                 // live-drag a swept-path waypoint, or move the whole path (annotation — no re-solve)
+    const sw = S.sweptPaths[S.dragSwept.si];
+    if (sw) {
+      if (S.dragSwept.body) { const d = svV.sub(w, S.dragSwept.last); sw.pts = sw.pts.map(p => svV.add(p, d)); S.dragSwept.last = w; }
+      else sw.pts[S.dragSwept.pi] = snap(w);
+      showSweptPopup(); draw();
     }
     return;
   }
@@ -2424,6 +2611,10 @@ window.addEventListener('pointerup', () => {
     const sp = S.offsetSpaces[S.dragOffset.oi]; S.dragOffset = null;
     if (sp) rebuildOffsetSpace(sp);
     resolveActive(); commit(); showOffsetPopup();
+    return;
+  }
+  if (S.dragSwept) {                                 // swept-path edit done → just commit (annotation; no re-pack)
+    S.dragSwept = null; commit(); showSweptPopup();
     return;
   }
   if (S.dragRoad) {                                  // road edit done → re-derive strips and re-pack around the new road
@@ -2597,12 +2788,13 @@ function polySelfIntersects(poly) {
   return false;
 }
 function finishDraft() {
-  const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle' || S.draftKind === 'offsetpath') ? 2 : 3;
+  const minPts = (S.draftKind === 'road' || S.draftKind === 'aisle' || S.draftKind === 'offsetpath' || S.draftKind === 'swept') ? 2 : 3;
   if (!S.draft || S.draft.length < minPts) { S.draft = null; S.draftKind = null; draw(); return; }
   const poly = S.draft.slice(), kind = S.draftKind;
   let msg = '已新增';
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
   if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; createOffsetSpace(poly); return; }   // path drawn → live-editable offset space
+  if (S.draftKind === 'swept') { S.draft = null; S.draftKind = null; createSweptPath(poly); return; }   // path drawn → vehicle turning / swept-path check
   if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
     const bad = polySelfIntersects(poly);
     msg = bad ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成 — 選開發型態一鍵生成';
@@ -2651,9 +2843,11 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
   if (e.code === 'Space') { S.spaceDown = true; cv.style.cursor = 'grab'; }
   if (e.key === 'Enter') { if (S.draft) finishDraft(); else S.mode === 'site' ? doSolveSite() : doSolve(); }
-  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; S.selOffset = null; hideOffsetPopup(); draw(); }
+  if (e.key === 'Escape') { S.draft = null; S.draftKind = null; S.selStall = null; S.measureStart = null; S.selOffset = null; hideOffsetPopup(); S.selSwept = null; hideSweptPopup(); draw(); }
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (S.selOffset != null && S.offsetSpaces[S.selOffset]) {
+    if (S.selSwept != null && S.sweptPaths[S.selSwept]) {
+      S.sweptPaths.splice(S.selSwept, 1); S.selSwept = null; hideSweptPopup(); draw(); commit();
+    } else if (S.selOffset != null && S.offsetSpaces[S.selOffset]) {
       deleteOffsetSpace(S.selOffset); draw();
     } else if (S.selEntrance) {
       S.entrances.splice(S.entrances.indexOf(S.selEntrance), 1); S.selEntrance = null; draw(); resolveActive();
@@ -2687,7 +2881,7 @@ window.addEventListener('keydown', e => {
       return;
     }
   }
-  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', f:'offsetpath', m:'measure', h:'pan' };
+  const map = { v:'select', b:'boundary', g:'building', o:'obstacle', r:'road', a:'aisle', z:'parkzone', k:'stall', c:'core', e:'entrance', d:'subdivide', f:'offsetpath', t:'swept', m:'measure', h:'pan' };
   if (map[e.key]) setTool(map[e.key]);
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
@@ -2696,13 +2890,13 @@ window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = 
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', aisle:'畫場內道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', offsetpath:'路徑偏移', measure:'量測距離', pan:'平移' };
+  const names = { select:'選取/編輯', boundary:'畫基地', building:'畫建築', obstacle:'畫障礙', road:'畫場外道路', aisle:'畫場內道路', parkzone:'畫停車區', stall:'加車位', core:'放核心', entrance:'放出入口', subdivide:'切割子地', offsetpath:'路徑偏移', swept:'迴轉檢核', measure:'量測距離', pan:'平移' };
   $('#stTool').textContent = '工具：' + (names[t] || t);
   cv.style.cursor = t === 'pan' ? 'grab' : t === 'select' ? 'default' : 'crosshair';
-  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone' && t !== 'offsetpath') { S.draft = null; }
+  if (t !== 'boundary' && t !== 'building' && t !== 'obstacle' && t !== 'road' && t !== 'aisle' && t !== 'parkzone' && t !== 'offsetpath' && t !== 'swept') { S.draft = null; }
   if (t !== 'subdivide') S.splitPt = null;
   if (t !== 'measure') S.measureStart = null;
-  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; S.selOffset = null; hideOffsetPopup(); }
+  if (t !== 'select') { S.selRoad = null; hideRoadPopup(); S.selAisle = null; hideAislePopup(); S.selObstacle = null; S.selOffset = null; hideOffsetPopup(); S.selSwept = null; hideSweptPopup(); }
   draw();
 }
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
@@ -2945,6 +3139,7 @@ function serialize() {
     boundary: S.boundary, buildings: S.buildings.filter(b => !ofsBuild.has(b)), obstacles: S.obstacles.filter(o => !ofsObs.has(o) && !pondSet.has(o)),
     roads: S.roads, roadLines: S.roadLines, parkZones: S.parkZones, manualCores: S.manualCores,
     offsetSpaces: S.offsetSpaces.map(s => ({ line: s.line, width: s.width, anchor: s.anchor, program: s.program })),
+    sweptPaths: (S.sweptPaths || []).map(s => ({ pts: s.pts.map(p => ({ x: p.x, y: p.y })), vehicle: s.vehicle })),
     ponds: (S.ponds || []).map(p => p.map(q => ({ x: q.x, y: q.y }))),
     entrances: S.entrances, params: S.params, opts: S.opts,
     parcels: S.parcels, activeParcel: S.activeParcel, parcelDev: S.parcelDev, edgeSetback: S.edgeSetback,
@@ -2968,6 +3163,9 @@ function deserialize(d) {
     else { const arr = offsetBand(sp.line, sp.width, sp.anchor); S.obstacles.push(arr); sp.host = arr; }
     S.offsetSpaces.push(sp);
   });
+  // swept-path checks are pure annotations (recomputed on draw) — restore the path + vehicle only
+  S.sweptPaths = (d.sweptPaths || []).map(s => ({ pts: (s.pts || []).map(p => ({ x: p.x, y: p.y })), vehicle: s.vehicle || 'car' })).filter(s => s.pts.length >= 2);
+  S.selSwept = null; S.dragSwept = null;
   // re-create detention ponds (also live in S.obstacles by reference, like offset hosts)
   S.ponds = [];
   (d.ponds || []).forEach(p => { const arr = p.map(q => ({ x: q.x, y: q.y })); S.obstacles.push(arr); S.ponds.push(arr); });
@@ -3510,6 +3708,8 @@ function setMode(mode) {
   S.selEdge = null; hideEdgePopup();
 
   document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  // mode-aware toolbar: hide tools that belong only to the OTHER mode (cuts the icon row clutter ~⅓)
+  document.querySelectorAll('.tool[data-mode-only]').forEach(b => { b.style.display = b.dataset.modeOnly === mode ? '' : 'none'; });
   $('#grpParking').style.display = mode === 'parking' ? '' : 'none';
   $('#grpSite').style.display = mode === 'site' ? '' : 'none';
   $('#metricsParking').style.display = mode === 'parking' ? '' : 'none';
@@ -4555,7 +4755,10 @@ $('#bDelete').onclick = () => {
 };
 
 /* --------------------------- collapsible panel --------------------------- */
-const COLLAPSE_KEY = 'ps.collapsed';
+const COLLAPSE_KEY = 'ps.collapsed.v2';
+// Advanced / optional / output panels start COLLAPSED so the first screen shows only the essentials a
+// feasibility run needs; the rest is one click away. (Keyed by the leading text of each group's <h3>.)
+const DEFAULT_COLLAPSED = ['進階選項', '車位種類配比', '圖例', '挖填方', '法規檢核', '財務', '方案', '參數預設', '匯出'];
 function saveCollapsed() {
   const st = {};
   document.querySelectorAll('#panel .group').forEach(g => { st[g.dataset.gkey] = g.classList.contains('collapsed'); });
@@ -4569,8 +4772,8 @@ function setupCollapsible() {
     const key = (h.textContent.trim() || ('g' + i)).slice(0, 24);
     g.dataset.gkey = key;
     const c = document.createElement('span'); c.className = 'chev'; c.textContent = '▾'; h.appendChild(c);
-    if (st[key]) g.classList.add('collapsed');
-    else if (!hasState && key.startsWith('圖例')) g.classList.add('collapsed');   // tidy default
+    if (hasState) { if (st[key]) g.classList.add('collapsed'); }
+    else if (DEFAULT_COLLAPSED.some(p => key.startsWith(p))) g.classList.add('collapsed');   // tidy first-run defaults
     h.addEventListener('click', () => { g.classList.toggle('collapsed'); saveCollapsed(); });
   });
   if (!hasState) saveCollapsed();
