@@ -25,7 +25,7 @@
     overscroll-behavior:none;-webkit-overflow-scrolling:auto;}
   button{font-family:inherit;}
   /* ---- layout ---- */
-  #app{display:grid;grid-template-rows:auto 1fr 26px;grid-template-columns:1fr 340px;
+  #app{display:grid;grid-template-rows:auto 1fr 26px;grid-template-columns:1fr 374px;
     grid-template-areas:"toolbar toolbar" "canvas panel" "status status";height:100vh;}
   #toolbar{grid-area:toolbar;display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:7px 14px;
     background:linear-gradient(180deg,#1f2a3d,#141c2b);border-bottom:1px solid var(--line);
@@ -35,6 +35,17 @@
   .tbrow + .tbrow{padding-top:6px;border-top:1px solid rgba(51,65,85,.4);}
   #stage{grid-area:canvas;position:relative;background:
     radial-gradient(circle at 30% 20%,#13203a,#0b1426);overflow:hidden;}
+  /* empty-state guide: tells the user the very next thing to do (hidden once there's content) */
+  #stageHint{position:absolute;top:44%;left:50%;transform:translate(-50%,-50%);z-index:4;
+    text-align:center;color:#9fb3cc;font-size:15px;line-height:2.05;pointer-events:none;
+    max-width:78%;text-shadow:0 2px 12px rgba(0,0,0,.6);display:none;}
+  #stageHint .big{font-size:19px;color:#e2e8f0;font-weight:700;display:block;margin-bottom:8px;}
+  #stageHint b{color:#7dd3fc;}
+  #stageHint kbd{background:#1e2c44;border:1px solid #34507a;border-radius:5px;padding:1px 7px;
+    font-size:13px;color:#cbd5e1;font-family:inherit;}
+  #demoBadge{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:4;background:rgba(15,23,42,.82);
+    border:1px solid #34507a;border-radius:8px;padding:6px 12px;font-size:12px;color:#cbd5e1;
+    pointer-events:none;backdrop-filter:blur(3px);white-space:nowrap;}
   #panel{grid-area:panel;background:linear-gradient(180deg,#1e293b,#1a2536);border-left:1px solid var(--line);
     overflow-y:auto;padding:14px 14px 22px;display:flex;flex-direction:column;gap:15px;}
   #status{grid-area:status;display:flex;align-items:center;gap:18px;padding:0 12px;
@@ -216,9 +227,10 @@
   /* ---- panel ---- */
   .group{background:var(--panel2);border:1px solid var(--line);border-radius:11px;overflow:hidden;
     box-shadow:0 1px 0 rgba(255,255,255,.02) inset;}
-  .group>h3{margin:0;padding:11px 13px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;
-    color:var(--muted);background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;
+  .group>h3{margin:0;padding:12px 13px;font-size:13px;letter-spacing:.2px;font-weight:600;
+    color:#cbd5e1;background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;
     cursor:pointer;user-select:none;transition:background .12s,color .12s;}
+  .group.result>h3{color:#7dd3fc;border-left:3px solid var(--accent);}  /* conclusion panels read as "answers" */
   .group>h3:hover{background:#22324a;color:var(--text);}
   .group>h3 .ico{width:13px;height:13px;color:var(--accent);}
   .group>h3 .chev{margin-left:auto;font-size:9px;color:var(--muted);transition:transform .15s;}
@@ -238,13 +250,13 @@
   .seg button{flex:1;background:#0f1a2b;border:none;color:var(--muted);padding:7px 0;cursor:pointer;font-size:12px;font-weight:600;transition:background .12s,color .12s;}
   .seg button:hover{color:var(--text);}
   .seg button.active{background:linear-gradient(180deg,#38bdf8,#0ea5e9);color:#00131f;}
-  .hint{font-size:11px;color:var(--muted);line-height:1.5;}
+  .hint{font-size:12px;color:var(--muted);line-height:1.55;}
 
   /* metrics */
   .metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
   .metric{background:#0d1726;border:1px solid var(--line);border-radius:9px;padding:10px 12px;}
   .metric .v{font-size:22px;font-weight:800;line-height:1.1;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
-  .metric .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:3px;}
+  .metric .l{font-size:11px;color:#aebfd4;letter-spacing:0;margin-top:3px;line-height:1.3;}
   .metric.big{grid-column:span 2;background:linear-gradient(135deg,#10243a,#0d1726);border-color:#1e3a52;}
   .metric.big .v{font-size:32px;color:var(--accent);text-shadow:0 0 22px rgba(56,189,248,.35);}
   .legend{display:flex;flex-wrap:wrap;gap:6px 12px;}
@@ -458,6 +470,8 @@
   <div id="stage">
     <div id="map"></div>
     <canvas id="cv"></canvas>
+    <div id="stageHint"></div>
+    <div id="demoBadge" style="display:none;">📋 這是範例基地 — 按上方「清空」開始你自己的案子</div>
 
     <div id="mapbar">
       <input type="text" id="addrInput" value="南部科學園區 臺南" placeholder="🔍 輸入地址 / 地名，按 Enter 移動地圖…" />
@@ -605,7 +619,7 @@
     </div>
     </div>
     <!-- metrics -->
-    <div class="group">
+    <div class="group result">
       <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M7 14l3-3 3 3 5-6"/></svg>即時數據</h3>
       <div class="body">
         <div id="metricsParking">
@@ -705,6 +719,8 @@
         <div class="field indoorRow" style="display:none;"><label>坡道斜率 Ramp 1:N</label><input type="number" id="pIndSlope" value="6" step="1" min="4" max="12" title="坡道長＝層高×N＋緩衝段；台灣建築技術規則室內坡道 1:6"></div>
         <div class="hint indoorRow" style="display:none;">室內模式：邊界＝樓板輪廓。自動配坡道（≥2 層才需要）、兩座逃生梯間、結構柱網；被柱壓到的車位誠實扣除。總車位＝標準層×層數。切「3D」看疊層。</div>
         <div class="field"><label>🎯 目標車位 Target</label><input type="number" id="pTarget" value="0" min="0" step="10" placeholder="0=不限"></div>
+        <div class="field" title="這棟建築的總樓地板，用來算「需要幾個車位」。留 0 會自動用畫的建築量體估算。"><label>建築 GFA (樓地板)</label><input type="number" id="pGFA" value="0" min="0" step="1000" placeholder="自動"></div>
+        <div class="hint">填建築樓地板 → 上方即時數據算出「需要 vs 已排」車位夠不夠。留 0 自動用量體估算。</div>
         <div class="field"><label>🌳 景觀樹 配置</label>
           <div class="seg" id="treesSeg" style="width:120px;">
             <button data-tr="0">關</button><button data-tr="1" class="active">開</button>
@@ -734,8 +750,6 @@
           </span>
         </div>
         <div class="hint">小型車格較窄、實際排得更密（真縮距）；色塊可改各車種顏色。</div>
-        <div class="field"><label>建築 GFA (SF)</label><input type="number" id="pGFA" value="0" min="0" step="1000" placeholder="自動"></div>
-        <div class="hint">GFA 留 0 時自動用畫的建築量體面積估算（樓地板）。</div>
       </div>
     </div>
 
@@ -853,7 +867,7 @@
         </div>
       </div>
 
-      <div class="group">
+      <div class="group result">
         <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>法規檢核 Compliance</h3>
         <div class="body">
           <div id="complianceList"><div class="hint">畫好基地、按「自動配置建案」後顯示。</div></div>
@@ -889,7 +903,7 @@
     </div>
 
     <!-- financial pro-forma — driven by the drawn massing; shown in BOTH parking & site modes -->
-    <div class="group" id="grpFin">
+    <div class="group result" id="grpFin">
       <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>財務 Pro-forma <span style="margin-left:auto;font-size:9px;color:var(--muted);">選填</span></h3>
       <div class="body">
         <div id="finReadout" style="font-size:12px;color:var(--muted);background:linear-gradient(135deg,#10243a,#0d1726);border:1px solid #1e3a52;border-radius:8px;padding:9px 11px;line-height:1.8;">畫建築量體＋設定參數後自動試算開發財務</div>

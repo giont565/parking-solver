@@ -315,6 +315,7 @@ function fitView() {
 
 /* ------------------------------ rendering -------------------------------- */
 function draw() {
+  updateStageHint();
   if (S.is3d) return draw3D();
   ctx.clearRect(0, 0, cv._w, cv._h);
   if (!S.mapMode) drawGrid();
@@ -2795,10 +2796,11 @@ function finishDraft() {
   if (S.draftKind === 'aisle') { S.draft = null; S.draftKind = null; addManualAisle(poly); return; }   // user-drawn drive aisle → tile stalls + re-link the network (no full re-solve, keeps the rest of the lot)
   if (S.draftKind === 'offsetpath') { S.draft = null; S.draftKind = null; createOffsetSpace(poly); return; }   // path drawn → live-editable offset space
   if (S.draftKind === 'swept') { S.draft = null; S.draftKind = null; createSweptPath(poly); return; }   // path drawn → vehicle turning / swept-path check
-  if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null;
+  if (S.draftKind === 'boundary') { S.boundary = poly; S.solution = null; S.edgeSetback = {}; S.selEdge = null; S._isSample = false;
     const bad = polySelfIntersects(poly);
-    msg = bad ? '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀' : '基地完成 — 選開發型態一鍵生成';
-    if (!bad && (!S.parcels || S.parcels.length < 2)) setTimeout(showConfigurator, 120);   // TestFit-style: prompt a configurator → one-click generate
+    if (bad) msg = '⚠️ 基地邊界自我交錯（畸形），排版會破圖 — 建議重畫成不交叉的形狀';
+    else if (S.mode === 'parking') { msg = '基地完成 — 自動排車位中…'; setTimeout(doSolve, 120); }   // parking: just lay it out, no extra dialog
+    else { msg = '基地完成 — 選開發型態一鍵生成'; if (!S.parcels || S.parcels.length < 2) setTimeout(showConfigurator, 120); }   // building: TestFit-style configurator
   }
   else if (S.draftKind === 'building') {
     // a smaller shape drawn INSIDE an existing building becomes its void (courtyard)
@@ -2887,6 +2889,27 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { if (e.code === 'Space') { S.spaceDown = false; cv.style.cursor = ''; } });
 
 /* ------------------------------- tools ----------------------------------- */
+// EMPTY-STATE GUIDE — one clear "do this next" line on the canvas. Rebuilds only when the step changes
+// (cheap to call from draw()). Plus the 範例 badge so the opening demo never looks like the user's own work.
+function updateStageHint() {
+  const el = document.getElementById('stageHint'); if (!el) return;
+  const hasResult = S.mode === 'site' ? !!S.site : !!S.solution;
+  const state = S.is3d ? 'hide' : S.boundary.length < 3 ? 'draw' : !hasResult ? ('go-' + S.mode) : 'hide';
+  if (state !== S._hintState) {
+    S._hintState = state;
+    if (state === 'hide') el.style.display = 'none';
+    else {
+      el.style.display = 'block';
+      el.innerHTML = state === 'draw'
+        ? '<span class="big">先圈出你的基地</span>點上方 <b>基地</b> 工具，在圖面點幾下框出土地範圍，<kbd>Enter</kbd> 或雙擊收尾'
+        : state === 'go-site'
+          ? '<span class="big">基地完成 ✓</span>左上按 <b>自動配置建案</b>，或右側挑一個開發類型一鍵生成'
+          : '<span class="big">基地完成 ✓</span>左上按 <b>⚡ 自動排車位</b> 開始排版';
+    }
+  }
+  const badge = document.getElementById('demoBadge');
+  if (badge) badge.style.display = (S._isSample && !S.is3d) ? '' : 'none';
+}
 function setTool(t) {
   S.tool = t;
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
@@ -2900,7 +2923,7 @@ function setTool(t) {
   draw();
 }
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('.tool.pulse-hint').forEach(t => t.classList.remove('pulse-hint'));
+  if (b.dataset.tool === 'boundary') document.querySelectorAll('.tool.pulse-hint').forEach(t => t.classList.remove('pulse-hint'));   // keep the "start here" glow until they actually start drawing the site
   setTool(b.dataset.tool);
 }));
 
@@ -3494,6 +3517,7 @@ function tileFailToast() {
 
 /* ----------------------------- sample site ------------------------------- */
 function sampleSite() {
+  S._isSample = true;                  // mark as the opening demo so the canvas shows a "範例" badge
   // ~ 420 x 300 ft L-shaped parcel with a building block
   S.boundary = [
     { x: 0, y: 0 }, { x: 420, y: 0 }, { x: 420, y: 300 },
@@ -3517,6 +3541,7 @@ $('#btnSample').onclick = () => {
   else { sampleSite(); setTool('select'); setTimeout(doSolve, 60); }
 };
 $('#btnClear').onclick = () => {
+  S._isSample = false;
   S.boundary = []; S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.contextBuildings = []; S.entrances = [];
   S.solution = null; S.site = null; S.selStall = null;
   S.parcels = null; S.activeParcel = 0; S.parcelDev = null; S.splitPt = null;
@@ -3629,8 +3654,11 @@ $('#pIndoor').addEventListener('change', () => {
 });
 ['#pIndAbove', '#pIndBelow', '#pIndFH', '#pIndCol', '#pIndSlope'].forEach(s =>
   $(s).addEventListener('change', () => { readParams(); if (S.params.indoor && S.solution) doSolve(); }));
-// live params -> re-solve on change (cheap enough). Any param tweak clears a manual grid-drag (fresh layout).
-['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('change', () => { S.gridShift = null; S.aisleEdits = null; if (S.solution) doSolve(); }));
+// LIVE re-solve: parking params now recompute AS YOU TYPE (like the building mode does) — no more
+// "nothing happens until I click 自動排車位". Debounced so dragging a number spinner on a big lot stays smooth.
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+const reSolveDebounced = debounce(() => { if (S.boundary.length >= 3) doSolve(); }, 200);
+['#pW','#pD','#pA','#pS','#pOrient','#pGreen','#pMaxRun','#pMaxGap'].forEach(s => $(s).addEventListener('input', () => { S.gridShift = null; S.aisleEdits = null; if (S.boundary.length >= 3) reSolveDebounced(); }));
 // CHANGE ROW AXIS — cycle the circulation direction (like TestFit's Row-axis change); the whole lot re-packs cleanly
 const ROW_AXIS = ['edge', '90', '0', 'auto'];
 $('#btnRowAxis').onclick = () => {
@@ -3641,8 +3669,8 @@ $('#btnRowAxis').onclick = () => {
 };
 ['#pEV','#pMoto','#adaManual','#pGFA'].forEach(s => $(s).addEventListener('input', () => { readParams(); if (S.solution) { reassign(); } updateMetrics(); draw(); }));
 // Compact %/width change the PACKING (narrower stalls fit more), so re-solve, not just reassign
-$('#pCompact').addEventListener('change', () => { readParams(); if (S.solution) doSolve(); });
-$('#cW').addEventListener('change', () => { readParams(); if (S.solution) doSolve(); });
+$('#pCompact').addEventListener('input', () => { if (S.boundary.length >= 3) reSolveDebounced(); });
+$('#cW').addEventListener('input', () => { if (S.boundary.length >= 3) reSolveDebounced(); });
 document.querySelectorAll('#accessSeg button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#accessSeg button').forEach(x => x.classList.remove('active')); b.classList.add('active');
   readParams();
@@ -3684,7 +3712,7 @@ $('#impJSON').onchange = e => {
   rd.onload = () => { try { deserialize(JSON.parse(rd.result)); toast('已匯入'); } catch { toast('檔案格式錯誤'); } };
   rd.readAsText(f);
 };
-$('#btnHelp').onclick = () => $('#help').style.display = $('#help').style.display === 'none' ? 'block' : 'none';
+$('#btnHelp').onclick = () => { const hidden = getComputedStyle($('#help')).display === 'none'; $('#help').style.display = hidden ? 'block' : 'none'; };
 $('#helpClose').onclick = () => $('#help').style.display = 'none';
 
 /* ----------------------------- site solver mode -------------------------- */
@@ -3862,6 +3890,7 @@ function updateUxSum() {
 }
 
 function sampleSiteParcel() {
+  S._isSample = true;
   S.boundary = [{ x: 0, y: 0 }, { x: 417, y: 0 }, { x: 417, y: 426 }, { x: 0, y: 426 }];
   S.buildings = []; S.obstacles = []; S.roads = []; S.roadLines = []; S.parkZones = []; S.manualCores = []; S.gridShift = null; S.aisleEdits = null; S.entrances = [{ x: 208, y: 0, type: 'inout' }];
   S.solution = null; S.site = null; S.selStall = null;
@@ -4755,10 +4784,10 @@ $('#bDelete').onclick = () => {
 };
 
 /* --------------------------- collapsible panel --------------------------- */
-const COLLAPSE_KEY = 'ps.collapsed.v2';
-// Advanced / optional / output panels start COLLAPSED so the first screen shows only the essentials a
-// feasibility run needs; the rest is one click away. (Keyed by the leading text of each group's <h3>.)
-const DEFAULT_COLLAPSED = ['進階選項', '車位種類配比', '圖例', '挖填方', '法規檢核', '財務', '方案', '參數預設', '匯出'];
+const COLLAPSE_KEY = 'ps.collapsed.v3';
+// Advanced / optional / SETUP panels start COLLAPSED; the CONCLUSIONS a feasibility run cares about
+// (即時數據 / 法規檢核 / 財務) stay OPEN so "does this scheme work?" is visible without digging.
+const DEFAULT_COLLAPSED = ['進階選項', '車位種類配比', '圖例', '挖填方', '方案', '參數預設', '匯出'];
 function saveCollapsed() {
   const st = {};
   document.querySelectorAll('#panel .group').forEach(g => { st[g.dataset.gkey] = g.classList.contains('collapsed'); });
