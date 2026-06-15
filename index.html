@@ -238,7 +238,7 @@
 
   /* ---- panel ---- */
   .group{background:var(--panel2);border:1px solid var(--line);border-radius:11px;overflow:hidden;
-    box-shadow:0 1px 0 rgba(255,255,255,.02) inset;}
+    box-shadow:0 1px 0 rgba(255,255,255,.02) inset;flex:none;}  /* flex:none → groups keep full height; the panel SCROLLS instead of squishing them (TestFit-style) */
   .group>h3{margin:0;padding:12px 13px;font-size:13px;letter-spacing:.2px;font-weight:600;
     color:#cbd5e1;background:#1a2638;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;
     cursor:pointer;user-select:none;transition:background .12s,color .12s;}
