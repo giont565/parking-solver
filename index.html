@@ -30,8 +30,7 @@
   #toolbar{grid-area:toolbar;display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:7px 14px;
     background:linear-gradient(180deg,#1f2a3d,#141c2b);border-bottom:1px solid var(--line);
     box-shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 6px 18px -8px rgba(0,0,0,.6);}
-  .tbrow{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;overflow-y:visible;scrollbar-width:thin;padding-bottom:1px;}
-  .tbrow::-webkit-scrollbar{height:5px;}
+  .tbrow{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap;row-gap:6px;padding-bottom:1px;}  /* wrap to a 2nd line instead of hiding tools behind a scrollbar (same "don't hide/squish" fix as the panel) */
   .tbrow + .tbrow{padding-top:6px;border-top:1px solid rgba(51,65,85,.4);}
   #stage{grid-area:canvas;position:relative;background:
     radial-gradient(circle at 30% 20%,#13203a,#0b1426);overflow:hidden;}
