@@ -4451,6 +4451,7 @@ function exportReport() {
   } else { toast('尚無結果可做報告'); return; }
   const img = cv.toDataURL('image/png');
   const date = new Date().toISOString().slice(0, 10);
+  const addr = $('#addrInput') ? $('#addrInput').value : '';
   const rowsHtml = rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join('');
   const html = `<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8"><title>${esc(title)}</title>
 <style>body{font-family:system-ui,'Noto Sans TC',sans-serif;margin:32px;color:#0f172a;}
@@ -4459,12 +4460,29 @@ img{width:100%;max-width:760px;border:1px solid #cbd5e1;border-radius:8px;margin
 table{border-collapse:collapse;width:100%;max-width:760px;font-size:13px;margin-bottom:14px;}
 td,th{border:1px solid #cbd5e1;padding:6px 10px;}td:first-child{color:#475569;}td:last-child{text-align:right;font-weight:600;}
 h3{font-size:14px;margin:14px 0 6px;}.foot{color:#94a3b8;font-size:11px;margin-top:18px;}
-@media print{.noprint{display:none;}}</style></head><body>
-<h1>${esc(title)}</h1>
-<div class="meta">地點：${esc($('#addrInput') ? $('#addrInput').value : '')} ｜ 日期：${date} ｜ 面積：${fmtA(area)} (${U.big(area).toFixed(2)} ${U.bu()})</div>
+.info{max-width:760px;display:grid;grid-template-columns:auto 1fr auto 1fr;gap:4px 10px;font-size:12px;margin-bottom:14px;}
+.info b{color:#475569;font-weight:600;white-space:nowrap;}
+[contenteditable]{outline:1px dashed #cbd5e1;border-radius:4px;padding:1px 5px;min-height:1em;min-width:60px;}
+[contenteditable]:focus{outline:2px solid #2563eb;background:#eff6ff;}
+[contenteditable]:empty:before{content:attr(data-ph);color:#cbd5e1;}
+#notes{max-width:760px;min-height:90px;font-size:13px;line-height:1.7;white-space:pre-wrap;}
+.edithint{max-width:760px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:12px;padding:8px 12px;border-radius:8px;margin-bottom:14px;}
+@media print{.noprint{display:none;}[contenteditable]{outline:none!important;padding:0;background:none!important;}[contenteditable]:empty{display:none;}[contenteditable]:empty:before{content:'';}}</style></head><body>
+<div class="edithint noprint">💡 這份報告可直接編輯：點任何文字（標題、案名、業主、下方備註）就能改/加註，改好再按「列印 / 存成 PDF」。虛線框與此提示不會印出來。</div>
+<h1 contenteditable="true">${esc(title)}</h1>
+<div class="info">
+  <b>案名</b><span contenteditable="true" data-ph="（點此填案名）">${esc(addr || '')}</span>
+  <b>業主 / 客戶</b><span contenteditable="true" data-ph="（點此填）"></span>
+  <b>製表人</b><span contenteditable="true" data-ph="（點此填）"></span>
+  <b>日期</b><span contenteditable="true">${date}</span>
+  <b>基地面積</b><span>${fmtA(area)} (${U.big(area).toFixed(2)} ${U.bu()})</span>
+  <b>地點</b><span contenteditable="true">${esc(addr)}</span>
+</div>
 <img src="${img}"><table>${rowsHtml}</table>${comp}
+<h3>分析說明 / 備註 Notes</h3>
+<div id="notes" contenteditable="true" data-ph="點此輸入給業主的分析說明、開發假設、風險備註、下一步建議…（會一起印進 PDF）"></div>
 <div class="foot">由 parcelweave 城織 產生 · 概念性可行性估算，非正式工程／法律文件</div>
-<button class="noprint" onclick="window.print()" style="margin-top:8px;padding:9px 18px;font-size:13px;cursor:pointer;">🖨️ 列印 / 存成 PDF</button>
+<button class="noprint" onclick="window.print()" style="margin-top:12px;padding:9px 18px;font-size:13px;cursor:pointer;">🖨️ 列印 / 存成 PDF</button>
 </body></html>`;
   const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));   // no document.write
   const w = window.open(url, '_blank');
