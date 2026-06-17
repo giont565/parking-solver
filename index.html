@@ -865,6 +865,10 @@
           <div class="field"><label>2-Bed 二房</label><input type="number" id="ux2P" value="30" min="0" max="100" style="width:52px;"><input type="number" id="ux2S" value="1000" min="500" style="width:52px;"><input type="number" id="pk2" value="" placeholder="—" step="0.1" min="0" style="width:52px;"></div>
           <div class="field"><label>3-Bed 三房</label><input type="number" id="ux3P" value="10" min="0" max="100" style="width:52px;"><input type="number" id="ux3S" value="1250" min="700" style="width:52px;"><input type="number" id="pk3" value="" placeholder="—" step="0.1" min="0" style="width:52px;"></div>
           <div class="hint" id="uxSum">佔比合計：100%　·　車位/戶留空＝用上方全域車位比</div>
+          <div class="field" style="font-size:10px;color:var(--muted);margin-top:4px;">🏢 平面配置（雙面走廊＋逃生核心）— 房型坪數即決定面寬，studio 窄、2/3 房寬</div>
+          <div class="field" title="公寓進深（走廊一側到外牆）；越深戶越大"><label>單元進深 Depth (ft)</label><input type="number" id="uUnitDepth" value="30" step="1" min="22" max="50"></div>
+          <div class="field" title="雙面走廊淨寬"><label>走廊寬 Corridor (ft)</label><input type="number" id="uCorrW" value="6" step="0.5" min="4" max="12"></div>
+          <div class="field" title="逃生核心（樓梯+電梯）間距上限：走廊每超過這距離就插一座核心（逃生距離驅動）"><label>核心間距 Core gap (ft)</label><input type="number" id="uCoreEvery" value="110" step="5" min="60" max="250"></div>
         </div>
       </div>
 

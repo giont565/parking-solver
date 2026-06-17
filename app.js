@@ -171,11 +171,12 @@ const REGIONS = {
   eu: { unit: 'metric', stallW: 8.20, stallD: 16.40, aisle: 19.69, setback: 9.8,    // 2.5×5.0 m, aisle 6 m
         site: { floorH: 11.5, maxFAR: 3.0, maxHeight: 98, maxCov: 50, maxDUA: 0, sbF: 16.4, sbS: 9.8, sbR: 16.4, parkRatio: 0.8 } },
 };
-const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'pGreen', 'pMaxGap', 'cW', 'pIndFH', 'pIndCol', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR'];
+const LEN_INPUTS = ['pW', 'pD', 'pA', 'pS', 'pH', 'pGreen', 'pMaxGap', 'cW', 'pIndFH', 'pIndCol', 'sFloorH', 'zHeight', 'zSbF', 'zSbS', 'zSbR', 'uUnitDepth', 'uCorrW', 'uCoreEvery'];
 const AREA_INPUTS = ['uxStudioS', 'ux1S', 'ux2S', 'ux3S', 'pGFA'];
 const LEN_LABELS = {
   pW: '車格寬 Stall W', pD: '車格深 Stall D', pA: '車道寬 Aisle', pS: '退縮 Setback', pH: '建築高度 Height',
   pIndFH: '層高 Floor-to-floor', pIndCol: '柱距 Column grid',
+  uUnitDepth: '單元進深 Depth', uCorrW: '走廊寬 Corridor', uCoreEvery: '核心間距 Core gap',
   sFloorH: '樓層高 Floor-to-floor', zHeight: '最大高度 Height', bHeight: '建築高度 Height', cW: '🚗 Compact 車格寬',
 };
 
@@ -1324,6 +1325,7 @@ function drawUnitPlan() {
     ctx.fillStyle = UNIT_FIT_COLORS[u.type] || '#93c5fd'; ctx.globalAlpha = 0.82; ctx.fill(); ctx.globalAlpha = 1;
     ctx.stroke();
   }
+  // egress cores are drawn by the SERVICE-CORES pass below (S.site.cores = unitPlan.cores) — not re-drawn here
 }
 
 function offsetLine(line, d) {   // offset a polyline by signed perpendicular distance d (miter at bends)
@@ -2244,6 +2246,7 @@ function draw3D() {
             stroke: 'rgba(148,163,184,.3)', depth: baseDepthArr(S.site.footprint) - 0.6, z: z0 - 0.05 });   // floor plate
           for (const u of up.plan) pushBox(faces, u.poly, fh, UNIT_FIT_COLORS[u.type] || '#93c5fd', null, k === resiFloors - 1, null, z0);
         }
+        for (const co of (up.cores || [])) pushBox(faces, co, z00 + resiFloors * fh, '#475569', null, true, null, 0);   // egress cores rise the full building height
       } else {
         pushBox(faces, S.site.footprint, S.site.height, '#0ea5e9', `${S.site.floors}F`, true, S.site.footVoids, podium, S.site.structured ? 0.4 : null);
       }
@@ -3162,7 +3165,7 @@ function loadScheme(sc) { deserialize(sc.data); toast('已載入：' + sc.name);
 /* --------------------------- serialize / IO ------------------------------ */
 function getSiteForm() {
   const ids = ['sUse', 'sFloorH', 'sEff', 'zFAR', 'zHeight', 'zCov', 'zDUA', 'zSbF', 'zSbS', 'zSbR', 'zPark',
-    'uxStudioP', 'ux1P', 'ux2P', 'ux3P', 'uxStudioS', 'ux1S', 'ux2S', 'ux3S', 'fLand', 'fHard', 'fSoft', 'fRentMo', 'fRentSf', 'fOpex', 'fGrowth', 'fHold', 'fExitCap'];
+    'uxStudioP', 'ux1P', 'ux2P', 'ux3P', 'uxStudioS', 'ux1S', 'ux2S', 'ux3S', 'uUnitDepth', 'uCorrW', 'uCoreEvery', 'fLand', 'fHard', 'fSoft', 'fRentMo', 'fRentSf', 'fOpex', 'fGrowth', 'fHold', 'fExitCap'];
   const o = {}; ids.forEach(id => o[id] = $('#' + id).value); return o;
 }
 function setSiteForm(o) { if (!o) return; Object.keys(o).forEach(id => { const el = $('#' + id); if (el) el.value = o[id]; }); }
@@ -3789,6 +3792,9 @@ function readSiteParams() {
       { type: '2br', pct: +$('#ux2P').value, size: U.Ar(+$('#ux2S').value) },
       { type: '3br', pct: +$('#ux3P').value, size: U.Ar(+$('#ux3S').value) },
     ],
+    unitDepth: ($('#uUnitDepth') ? U.Lr(+$('#uUnitDepth').value) : 0) || 30,        // building configurator: apartment depth
+    corrWidth: ($('#uCorrW') ? U.Lr(+$('#uCorrW').value) : 0) || 6,                  // double-loaded corridor width
+    coreEvery: ($('#uCoreEvery') ? U.Lr(+$('#uCoreEvery').value) : 0) || 110,        // max corridor run between egress cores
     parkRatioByType: (() => {                       // per-unit-type parking ratio (Spacio-style); blank → use global
       const m = { studio: $('#pkStudio'), '1br': $('#pk1'), '2br': $('#pk2'), '3br': $('#pk3') }, r = {}; let any = false;
       for (const k in m) { const v = m[k] && m[k].value; if (v !== '' && v != null && +v >= 0) { r[k] = +v; any = true; } }
@@ -4021,6 +4027,7 @@ $('#sParkType').addEventListener('change', () => {
 });
 ['#sFloorH', '#sEff', '#zFAR', '#zHeight', '#zCov', '#zDUA', '#zSbF', '#zSbS', '#zSbR', '#zPark', '#sParkLevelsAbove', '#sParkLevelsBelow', '#sStructEff',
  '#uxStudioP', '#ux1P', '#ux2P', '#ux3P', '#uxStudioS', '#ux1S', '#ux2S', '#ux3S', '#pkStudio', '#pk1', '#pk2', '#pk3',
+ '#uUnitDepth', '#uCorrW', '#uCoreEvery',
  '#fLand', '#fHard', '#fSoft', '#fRentMo', '#fRentSf', '#fOpex', '#fGrowth', '#fHold', '#fExitCap'].forEach(sel =>
   $(sel).addEventListener('change', () => { updateUxSum(); if (S.mode === 'site' && S.boundary.length >= 3) doSolveSite(); }));
 

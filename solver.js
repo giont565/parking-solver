@@ -1482,12 +1482,14 @@ function towerPlate(podium, p) {
 // back to the estimate).
 function unitFitLayout(area, p, voids) {
   const block = voids || [];
-  const empty = { plan: [], corridors: [], perFloor: 0, byType: {}, theta: 0 };
+  const empty = { plan: [], corridors: [], cores: [], perFloor: 0, byType: {}, theta: 0 };
   if (!area || area.length < 3) return empty;
   const mix = (p.unitMix && p.unitMix.length) ? p.unitMix : [{ type: '1br', pct: 100, size: 750 }];
   const sumPct = mix.reduce((s, m) => s + (m.pct || 0), 0) || 1;
-  const CORR = 5;                                            // interior double-loaded corridor (ft)
+  const CORR = Math.max(p.corrWidth || 6, 4);               // interior double-loaded corridor (ft)
   const Du = Math.max(p.unitDepth || 30, 22);               // standard apartment depth
+  const Wc = Math.max(p.coreWidth || 22, 14);               // egress core (stair + elevator bank) width
+  const coreEvery = Math.max(p.coreEvery || 110, 60);       // max corridor run between egress cores (travel-distance driven)
   // orient to the plate's longest edge: r = along it (corridors run this way), q = depth
   let th = 0, best = -1;
   for (let i = 0; i < area.length; i++) { const a = area[i], b = area[(i + 1) % area.length]; const Le = Math.hypot(b.x - a.x, b.y - a.y); if (Le > best) { best = Le; th = Math.atan2(b.y - a.y, b.x - a.x); } }
@@ -1499,7 +1501,7 @@ function unitFitLayout(area, p, voids) {
   const minQ = Math.min(...el.map(e => e.q)), maxQ = Math.max(...el.map(e => e.q));
   const rect = (r0, q0, r1, q1) => [toWorld(r0, q0), toWorld(r1, q0), toWorld(r1, q1), toWorld(r0, q1)];
   const fits = poly => poly.every(pt => pointInPoly(pt, area)) && !block.some(b => polyOverlap(poly, b));
-  const W = {}; mix.forEach(m => { W[m.type] = Math.max(10, Math.min((m.size || 700) / Du, 64)); });   // width so area ≈ size
+  const W = {}; mix.forEach(m => { W[m.type] = Math.max(10, Math.min((m.size || 700) / Du, 64)); });   // frontage so area ≈ size (the "unit library": studio narrow, 2/3-br wide)
   const narrow = mix.reduce((a, m) => W[m.type] < W[a] ? m.type : a, mix[0].type);                      // smallest unit type
   const types = mix.map(m => m.type), target = {}; mix.forEach(m => target[m.type] = m.pct / sumPct);
   const placed = {}; types.forEach(t => placed[t] = 0); let total = 0;
@@ -1508,14 +1510,35 @@ function unitFitLayout(area, p, voids) {
     for (const t of types) { const sc = target[t] - (total ? placed[t] / total : 0); if (sc > bs) { bs = sc; bt = t; } }
     return bt;
   };
+  // EGRESS CORES — vertical stair/elevator spines spaced so every corridor run ≤ coreEvery (travel distance).
+  // They run the full depth so they break BOTH rows of every band at the same r (a real circulation spine).
+  const cores = [], coreRanges = [];
+  const usable = maxR - minR;
+  const nCore = (usable > coreEvery && Wc < usable) ? Math.floor(usable / coreEvery) : 0;
+  for (let i = 1; i <= nCore; i++) {
+    const cc = minR + usable * i / (nCore + 1), cr = cc - Wc / 2;
+    const co = rect(cr, minQ, cr + Wc, maxQ);
+    // test slightly-shrunk corners so a core flush to the building edge still passes, but one crossing a notch fails
+    const mid = { x: (co[0].x + co[2].x) / 2, y: (co[0].y + co[2].y) / 2 };
+    const inside = co.every(pt => pointInPoly({ x: mid.x + (pt.x - mid.x) * 0.94, y: mid.y + (pt.y - mid.y) * 0.94 }, area)) && !block.some(b => polyOverlap(co, b));
+    if (inside) { cores.push(co); coreRanges.push([cr, cr + Wc]); }
+  }
+  coreRanges.sort((a, b) => a[0] - b[0]);
+  // segments of r left for units between the cores (and the building ends)
+  const segs = []; let cur = minR;
+  for (const [a, b] of coreRanges) { if (a - cur > W[narrow]) segs.push([cur, a]); cur = Math.max(cur, b); }
+  if (maxR - cur > W[narrow]) segs.push([cur, maxR]);
+  if (!segs.length) segs.push([minR, maxR]);
   const plan = [], corridors = [];
-  const placeRow = (q0, q1) => {                             // tile one unit row across r between depths q0..q1
-    let r = minR, guard = 0;
-    while (r + W[narrow] <= maxR + 0.5 && guard++ < 4000) {
-      let t = nextType(), w = W[t], u = rect(r, q0, r + w, q1);
-      if (!(r + w <= maxR + 0.5 && fits(u))) { t = narrow; w = W[t]; u = rect(r, q0, r + w, q1); }   // try the narrowest before stepping over a notch/void
-      if (r + w <= maxR + 0.5 && fits(u)) { plan.push({ poly: u, type: t, size: Math.round((q1 - q0) * w) }); placed[t]++; total++; r += w; }
-      else r += 8;                                           // probe past the obstruction
+  const placeRow = (q0, q1) => {                             // tile units across each core-bounded segment between depths q0..q1
+    for (const [s0, s1] of segs) {
+      let r = s0, guard = 0;
+      while (r + W[narrow] <= s1 + 0.5 && guard++ < 2000) {
+        let t = nextType(), w = W[t], u = rect(r, q0, r + w, q1);
+        if (!(r + w <= s1 + 0.5 && fits(u))) { t = narrow; w = W[t]; u = rect(r, q0, r + w, q1); }   // try the narrowest before stepping over a notch/void
+        if (r + w <= s1 + 0.5 && fits(u)) { plan.push({ poly: u, type: t, size: Math.round((q1 - q0) * w) }); placed[t]++; total++; r += w; }
+        else r += 8;                                         // probe past the obstruction
+      }
     }
   };
   const band = 2 * Du + CORR;
@@ -1529,7 +1552,7 @@ function unitFitLayout(area, p, voids) {
     }
   }
   const byType = {}; types.forEach(t => { if (placed[t]) byType[t] = placed[t]; });
-  return { plan, corridors, perFloor: total, byType, theta: th };
+  return { plan, corridors, cores, perFloor: total, byType, theta: th, coreCount: cores.length };
 }
 
 function solveSite(input) {
@@ -1632,7 +1655,7 @@ function solveSite(input) {
     // A wrap's parking core + footprint courtyards are kept clear; fall back to a GFA estimate when
     // the plate is too small/thin to tile a real layout.
     if (!garden) {
-      const fitVoids = (footVoids || []).concat(isWrap && wrapCore ? [wrapCore] : []).concat(corePoly ? [corePoly] : []);
+      const fitVoids = (footVoids || []).concat(isWrap && wrapCore ? [wrapCore] : []);   // egress cores are placed BY unit-fit now (evenly, travel-distance driven) — don't reserve the old single central core here
       const uf = unitFitLayout(footprint, p, fitVoids);
       if (uf.perFloor >= 2) { unitPlan = uf; units = uf.perFloor * resiFloors; }
     }
@@ -1731,12 +1754,13 @@ function solveSite(input) {
   // 6b. AUTO CORE: a service core (egress stairs + elevators) for footprint mid/high-rise buildings.
   // The polygon was computed up-front (corePoly) so the unit-fit could reserve it; reuse it here.
   let cores = [], coreInfo = null;
-  if (corePoly) {
-    cores = [corePoly];
-    coreInfo = {
-      stairs: footArea > 12000 ? 3 : 2,                                    // ≥2 egress stairs; +1 for big floorplates
-      elevators: Math.min(residential ? Math.max(1, Math.ceil(units / 90)) : Math.max(1, Math.ceil(floors / 6)), 10),
-    };
+  const elevCount = Math.min(residential ? Math.max(1, Math.ceil(units / 90)) : Math.max(1, Math.ceil(floors / 6)), 10);
+  if (unitPlan && unitPlan.cores && unitPlan.cores.length) {
+    cores = unitPlan.cores;                                               // the egress core spines the configurator placed ARE the building's cores
+    coreInfo = { stairs: cores.length, elevators: elevCount };
+  } else if (corePoly) {
+    cores = [corePoly];                                                   // fallback (estimate path / plate too small to unit-fit): one central core
+    coreInfo = { stairs: footArea > 12000 ? 3 : 2, elevators: elevCount };
   }
 
   // 6c. TURN RADIUS: the design vehicle must clear the manoeuvring space
